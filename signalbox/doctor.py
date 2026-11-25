@@ -65,20 +65,20 @@ def claude_check(host):
     return Check(OK, "Claude Code at %s" % found)
 
 
-def hooks_check(settings):
+def hooks_check(settings, advice=None):
     present = hooks.installed(settings)
     if present == list(hooks.EVENTS):
         return Check(OK, "Claude Code hooks in %s" % settings)
-    return Check(MISSING, "Claude Code hooks", "install them with: %s" % names.command("setup"))
+    return Check(MISSING, "Claude Code hooks", advice or "install them with: %s" % names.command("setup"))
 
 
-def named_prerequisites(host, settings):
+def named_prerequisites(host, settings, hooks_advice=None):
     """(what it is, its check): git, gh, claude and the hooks."""
-    return [("git", git_check(host)), ("gh", gh_check(host)), ("claude", claude_check(host)), ("hooks", hooks_check(settings))]
+    return [("git", git_check(host)), ("gh", gh_check(host)), ("claude", claude_check(host)), ("hooks", hooks_check(settings, hooks_advice))]
 
 
-def prerequisites(host, settings):
-    return [check for _, check in named_prerequisites(host, settings)]
+def prerequisites(host, settings, hooks_advice=None):
+    return [check for _, check in named_prerequisites(host, settings, hooks_advice)]
 
 
 def needed(configuration):

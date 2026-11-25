@@ -84,6 +84,7 @@ class Setup(Linking):
         self.run_cli("setup", keys=keys)
         body = "\n".join(keys.last("Prerequisites").body)
         self.assertIn("missing  gh: install it with: brew install gh", body)
+        self.assertIn("missing  Claude Code hooks: this setup installs them", body)
         self.assertRegex(body, r"ok       git \d+\.\d+")
 
 

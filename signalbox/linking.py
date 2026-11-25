@@ -85,7 +85,7 @@ def setup(chosen, context):
     settings = names.claude_settings(context.host.environ)
     install = not chosen.no_hooks
     steps = [
-        screens.prerequisites(doctor.prerequisites(context.host, settings)),
+        screens.prerequisites(doctor.prerequisites(context.host, settings, "this setup installs them" if install else None)),
         screens.features("Default features"),
         screens.confirm("Save these defaults?", lambda given: answers.setup_summary(configuration, given, settings, install)),
     ]
