@@ -4,6 +4,26 @@ Each release of signalbox, newest first. Versions follow `MAJOR.MINOR.PATCH`: fr
 a change that breaks a command, a flag, the configuration file or the lane log's fields takes
 a new major version.
 
+## [1.1.0] - 2026-11-25
+
+### Added
+
+- `setup` draws each step as a whole screen in a terminal of 112 by 32 or more: a status bar
+  with the step and a progress bar, an animated railway signal, the name in large pixels,
+  the steps, the answers so far, the step's panel and a panel about the option under the
+  cursor (what it does, what it needs, what needs it, the tools it uses). From 80 by 24 a
+  roomier layout; smaller terminals keep the plain questions.
+- `setup` offers to install what is missing (git, gh, Claude Code) with Homebrew, after a
+  warning, and installs only after the summary's yes; `--install-missing` installs without
+  asking.
+- The README opens with a banner and the setup screen, says what problem it solves, and
+  moves how it works and troubleshooting to `docs/`, with a picture of the merge lane.
+
+### Changed
+
+- A `SIGNALBOX_GIT`, `SIGNALBOX_GH` or `SIGNALBOX_CLAUDE` that names no program counts as
+  missing.
+
 ## [1.0.0] - 2026-11-25
 
 ### Added

@@ -134,16 +134,24 @@ it tries `gh pr merge`.
 ### What `setup` asks
 
 1. **Prerequisites**: git (2.38 or later), gh signed in, Claude Code, and the Claude Code
-   hooks, each marked `ok`, `missing`, `problem` or `unknown` with what to do about it.
-   Nothing is installed from here.
-2. **Default features**: a checklist of the [features](#features-and-presets), starting
+   hooks, each marked `ok`, `missing`, `problem` or `unknown` with what to do about it. When
+   git (missing, or older than 2.38), gh or Claude Code is missing and Homebrew is there, a
+   warning closes the screen; without Homebrew nothing is offered, and the screen points to
+   [brew.sh](https://brew.sh).
+2. **Install what is missing** (only then): `Install with Homebrew` (`brew install git`,
+   `brew install gh`, `brew install --cask claude-code`) or `Skip`, which it starts on.
+   Nothing runs yet.
+3. **Default features**: a checklist of the [features](#features-and-presets), starting
    from the defaults already saved, else from `recommended`. Turning one on turns on what it
    needs; turning one off turns off what needs it, and says why. At least one stays on.
-3. **Summary**: the default features, where the hooks go (or `not installed (--no-hooks)`),
+4. **Summary**: what will be installed, the default features, where the hooks go (or `not installed (--no-hooks)`),
    and the projects already linked, which keep their own features. `Save these defaults?`:
    `y` saves; `n` changes nothing.
 
-After saving, `setup` installs the hooks in `~/.claude/settings.json` (unless `--no-hooks`),
+After the summary's `y`, the installs run first, with their output on screen; a failed
+install is reported, the rest still runs, and `setup` exits with 1. Signing in stays yours:
+`gh auth login` for gh, and `claude` once after Claude Code is installed. `--yes` alone
+installs nothing; `--install-missing` installs. Then `setup` saves and installs the hooks in `~/.claude/settings.json` (unless `--no-hooks`),
 keeping every other setting and hook of that file, and says `Next: in a repository's
 folder, run: signalbox init`.
 
@@ -397,7 +405,7 @@ signalbox: ~/notes is in no linked project. Link its repository with: signalbox 
 
 | Command | Flags | What it does |
 | --- | --- | --- |
-| `setup` | `--preset <name>` or `--feature <feature>` (repeated), `--no-hooks`, `--yes` | Set up once: check the prerequisites, choose the defaults, install the Claude Code hooks. |
+| `setup` | `--preset <name>` or `--feature <feature>` (repeated), `--no-hooks`, `--install-missing`, `--yes` | Set up once: check the prerequisites (and install what is missing with Homebrew, when chosen), choose the defaults, install the Claude Code hooks. |
 | `init [folder]` | `--name <name>`, `--gate <command>`, `--base <branch>`, `--shared-hooks`, `--preset <name>` or `--feature <feature>` (repeated), `--yes` | Link a repository's folder, or replace the settings of one linked already. |
 | `deinit [folder]` | | Unlink a repository's folder. |
 | `status` | `--json`, `--no-github`, `--group` | Show the board. `--no-github` leaves out the open pull requests (no `gh`); `--group` shows the board of every project of this project's group, in order. |
@@ -637,7 +645,7 @@ never touches your own configuration, logs, caches or Claude Code settings:
 | `SIGNALBOX_CLAUDE_SETTINGS` | `~/.claude/settings.json`, where the hooks go |
 | `SIGNALBOX_CLAUDE_PROJECTS` | `~/.claude/projects`, where the sweep reads Claude Code's agent records |
 | `SIGNALBOX_SESSIONS_DIR` | `~/Library/Application Support/signalbox/sessions`, where the hooks record each session |
-| `SIGNALBOX_GIT`, `SIGNALBOX_GH`, `SIGNALBOX_CLAUDE` | the program found in `PATH` or Homebrew's folders |
+| `SIGNALBOX_GIT`, `SIGNALBOX_GH`, `SIGNALBOX_CLAUDE`, `SIGNALBOX_BREW` | the program found in `PATH` or Homebrew's folders (a path to no program counts as missing) |
 
 ```sh
 scratch=$(mktemp -d)
