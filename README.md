@@ -597,7 +597,8 @@ group: web#25 merged
 ```
 
 Every pull request is read first: when any would be refused (closed, a draft, on another
-base, from a fork, unreadable), each is named and nothing runs. Then the lanes run one after
+base, from a fork, unreadable, or changing its own gate without `--allow-gate-change`), each
+is named and nothing runs. Then the lanes run one after
 another in the group's order (not the command line's), each in its own repository with its
 own lock, gate and lane log (its record says `"group"`), and the run stops at the first that
 does not merge: the closing lines say `merged`, `not merged (<status>)` or `not tried`. The
@@ -764,7 +765,8 @@ sections (`--json` gives the same as one object; a measure with nothing to measu
   project's `merge_method`: with `merge`, each merge commit; with `squash`, each commit GitHub
   wrote (committer `noreply@github.com`) or the lane recorded; with `rebase`, each run of
   consecutive commits GitHub wrote with one committer time (a rebased pull request), named by
-  its newest commit. A commit pushed straight to the base is never a merge.
+  its newest commit. A commit pushed straight to the base is never a merge; an edit made on
+  GitHub's website straight on the base is written by GitHub too, and counts as one.
   - `Total`, and a table of merges per day.
   - `Stale`: merges of a branch that did not hold the base's previous tip, so the result
     was never tested as such by the branch's own checks. `Stale share` is their part of the

@@ -50,6 +50,17 @@ class Recording(repos.Scratch):
         self.assertEqual(self.record(), {"cwd": str(worktree), "pid": 4242, "started": STARTED, "updated": 1010})
         self.assertEqual(self.host.walks, 1)
 
+    def test_a_resumed_session_records_its_new_process(self):
+        self.hook("session-start", {"session_id": SESSION, "cwd": str(self.repo)})
+        worktree = self.add_worktree(self.repo, "wt-a", "a")
+        self.host.dead = {4242}  # the session ended; resumed, it keeps its id under a new process
+        self.host.claude = 5151
+        self.host.started = {5151: ["Wed Nov 25 20:00:00 2026"]}
+        self.host.now = 1010.0
+        self.assertEqual(self.hook("user-prompt-submit", {"session_id": SESSION, "cwd": str(worktree)}), 0)
+        self.assertEqual(self.record(), {"cwd": str(worktree), "pid": 5151, "started": ["Wed Nov 25 20:00:00 2026"], "updated": 1010})
+        self.assertEqual(self.host.walks, 2)
+
     def test_nothing_is_written_while_the_folder_is_the_same_and_the_record_is_a_minute_old_or_less(self):
         self.hook("user-prompt-submit", {"session_id": SESSION, "cwd": str(self.repo)})
         self.host.now = 1060.0

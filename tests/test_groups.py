@@ -104,6 +104,27 @@ class GroupMerge(lanes.Lane):
         self.assertEqual((self.gate_calls(), self.gate_calls(self.web)), ([], []))
         self.assertEqual((self.records("shop"), self.records("web")), ([], []), "nothing logged")
 
+    def test_runs_nothing_when_a_later_pull_request_changes_its_gate(self):
+        self.configure()
+        web_base = self.origin_rev("main", self.web)
+        self.open_pr(7, "feat/w", self.web)
+        gate = self.push_commit("feat/gate", "scripts/check.sh", "exit 0", "main")
+        self.describe(104, "feat/gate", gate)
+
+        code, stdout, stderr = self.merge("104", "web#7")
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        self.assertEqual(
+            stderr,
+            "group: shop#104 refused: it changes the gate (scripts/check.sh), which would check itself. "
+            "Review that change, then run again with --allow-gate-change.\n"
+            "group: nothing was tried.\n",
+        )
+        self.assertEqual(self.origin_rev("main", self.web), web_base, "web, first in order, was not merged")
+        self.assertEqual((self.gate_calls(), self.gate_calls(self.web)), ([], []))
+        self.assertEqual((self.records("shop"), self.records("web")), ([], []))
+
     def test_a_pull_request_gh_cannot_read_refuses_them_all(self):
         self.configure()
         self.open_pr(104, "feat/a")

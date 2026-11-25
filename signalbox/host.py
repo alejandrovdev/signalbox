@@ -94,6 +94,16 @@ class Host:
             pid = int(fields[0])
         return None
 
+    def alive(self, pid):
+        """Whether a process with this pid runs (a signal 0, without running `ps`)."""
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except (PermissionError, OverflowError, TypeError, ValueError):
+            return True
+        return True
+
     def directories(self):
         """(pid, current directory) of every process `lsof` can read; None when it cannot."""
         done = self.run(["lsof", "-d", "cwd", "-Fn"])

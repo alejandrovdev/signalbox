@@ -40,6 +40,8 @@ def write_record(host, data):
     path = names.sessions_dir(host.environ) / ("%s.json" % session)
     now = int(host.clock())
     known = read(path)
+    if known is not None and not host.alive(known["pid"]):
+        known = None  # a resumed session keeps its id under a new process: look for it again
     if known is not None:
         if known["cwd"] == cwd and 0 <= now - known["updated"] <= FRESH:
             return

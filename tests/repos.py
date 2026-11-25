@@ -44,12 +44,16 @@ class StandInHost(Host):
         self.started = {}  # pid: the start dates `ps` prints for it (UTC first, then local); None: `ps` fails
         self.cwd_list = []  # (pid, directory): what `lsof` reads; None when it cannot be read
         self.claude = None  # the pid of the session's `claude` process a hook finds, if any
+        self.dead = set()  # the pids `alive` says no longer run
         self.walks = 0  # how many times a hook looked for it
         self.spawned = []
         self.now = None
 
     def start_dates(self, pid):
         return None if self.started is None else self.started.get(pid, [])
+
+    def alive(self, pid):
+        return pid not in self.dead
 
     def session_process(self):
         self.walks += 1
