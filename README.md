@@ -11,6 +11,8 @@ merges their pull requests one at a time, each checked on the merged result.
 > brings. The repository and its Homebrew tap are private until publication: `brew install`
 > works only for a GitHub account with access to both.
 
+![signalbox setup: the railway signal, the steps, the features panel and the details of the option under the cursor](docs/images/setup.png)
+
 Contents: [The problem it solves](#the-problem-it-solves) · [Requirements](#requirements) ·
 [Install](#install) · [Quick start](#quick-start) ·
 [Setting up and linking](#setting-up-and-linking) ·
