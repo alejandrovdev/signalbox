@@ -30,6 +30,7 @@ feature_docs = ["docs/features/*.md"]
 build_output = [".turbo", "dist"]
 merge_method = "squash"
 merge_worktree = "~/scratch/shop-merge"
+legacy_locks = ["old-lane.lock"]
 
 [projects.blog]
 path = "/srv/blog"
@@ -71,6 +72,7 @@ class Parse(unittest.TestCase):
         self.assertEqual(shop.build_output, (".turbo", "dist"))
         self.assertEqual(shop.merge_method, "squash")
         self.assertEqual(shop.merge_worktree, "~/scratch/shop-merge")
+        self.assertEqual(shop.legacy_locks, ("old-lane.lock",))
         self.assertEqual(blog.features, ("board", "sweep"), "features keep the order of the feature table")
         self.assertTrue(blog.has("sweep"))
         self.assertFalse(blog.has("merge-lane"))

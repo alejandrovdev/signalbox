@@ -15,6 +15,7 @@ One TOML file that `setup` and `init` write and a person may edit by hand:
     feature_docs = ["docs/features/*.md"]
     build_output = [".turbo", "dist"]
     merge_method = "merge"
+    legacy_locks = ["old-lane.lock"]  # another tool's lane lock, taken too
 
 `[defaults]` is optional: what a new project starts from. Reading the file checks its shape
 only: types, names, that each feature has the features it builds on, and that a project with
@@ -109,6 +110,7 @@ PROJECT_KEYS = (
     "build_output",
     "merge_method",
     "merge_worktree",
+    "legacy_locks",
 )
 DEFAULTS_KEYS = ("preset", "features")
 
@@ -134,6 +136,7 @@ class Project:
     build_output: tuple = BUILD_OUTPUT
     merge_method: str = MERGE_METHODS[0]
     merge_worktree: Optional[str] = None  # None: the default place
+    legacy_locks: tuple = ()  # other tools' lane locks, from the git common directory
 
     @property
     def directory(self):
@@ -307,6 +310,7 @@ def project_from(name, table, problems):
             (key + ".merge_method", 'unknown method "%s"; one of: %s' % (shown, ", ".join(MERGE_METHODS)))
         )
     worktree = text_value(key, table, "merge_worktree", problems)
+    legacy = text_list(key, table, "legacy_locks", problems)
     for other in table:
         if other not in PROJECT_KEYS:
             problems.append(("%s.%s" % (key, other), "unknown key"))
@@ -324,6 +328,7 @@ def project_from(name, table, problems):
         BUILD_OUTPUT if output is None else output,
         method,
         worktree,
+        legacy or (),
     )
 
 
@@ -406,6 +411,8 @@ def project_lines(project):
         lines.append("merge_method = %s" % quoted(project.merge_method))
     if project.merge_worktree is not None:
         lines.append("merge_worktree = %s" % quoted(project.merge_worktree))
+    if project.legacy_locks:
+        lines.append("legacy_locks = %s" % listed(project.legacy_locks))
     return lines
 
 
