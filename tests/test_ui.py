@@ -6,8 +6,10 @@ import curses
 import unittest
 from unittest import mock
 
+import signalbox
 from signalbox import ui
-from signalbox.ui import plain, screen
+from signalbox.ui import plain, scene, screen, signal
+from signalbox.ui.canvas import Style
 from signalbox.ui.sequence import DONE, QUIT, RUNNING, Screen, Sequence
 from signalbox.ui.widgets import (
     BACKSPACE,
@@ -342,6 +344,226 @@ class Layout(unittest.TestCase):
         self.assertEqual(screen.key_name("\x1b"), ESC)
         self.assertEqual(screen.key_name("\x7f"), BACKSPACE)
         self.assertIsNone(screen.key_name("\x01"))
+
+
+class Colors(unittest.TestCase):
+    """How much color the screens use, decided from what the terminal takes."""
+
+    def test_256_colors_draw_everything_8_only_the_text_and_none_without_colors(self):
+        self.assertEqual(screen.palette(True, 256, False), screen.FULL)
+        self.assertEqual(screen.palette(True, 8, False), screen.BASIC)
+        self.assertEqual(screen.palette(False, 256, False), screen.PLAIN)
+
+    def test_no_color_turns_every_color_off(self):
+        self.assertEqual(screen.palette(True, 256, True), screen.PLAIN)
+        self.assertTrue(screen.no_color({"NO_COLOR": "1"}))
+        self.assertFalse(screen.no_color({"NO_COLOR": ""}), "an empty NO_COLOR asks nothing")
+        self.assertFalse(screen.no_color({}))
+
+    def test_half_blocks_need_a_terminal_that_writes_utf_8(self):
+        self.assertTrue(screen.draws_blocks("UTF-8"))
+        self.assertTrue(screen.draws_blocks("utf8"))
+        self.assertFalse(screen.draws_blocks("US-ASCII"))
+        self.assertFalse(screen.draws_blocks("no-such-encoding"))
+        self.assertFalse(screen.draws_blocks(None))
+
+
+class FakeCurses:
+    A_NORMAL, A_REVERSE, A_DIM, A_BOLD = 0, 1 << 18, 1 << 20, 1 << 21
+    COLOR_RED, COLOR_GREEN = 1, 2
+
+    def __init__(self):
+        self.pairs = {}
+
+    def init_pair(self, number, foreground, background):
+        self.pairs[number] = (foreground, background)
+
+    def color_pair(self, number):
+        return number << 8
+
+    def colors_of(self, attribute):
+        return self.pairs.get((attribute >> 8) & 0xFF)
+
+
+class Painting(unittest.TestCase):
+    """The attributes each kind of line and each picture cell is drawn with."""
+
+    def test_without_colors_the_lines_keep_their_plain_attributes(self):
+        fake = FakeCurses()
+        painter = screen.Painter(fake, screen.PLAIN, rich=False, limit=255)
+
+        self.assertEqual(painter.style(screen.TITLE), fake.A_BOLD)
+        self.assertEqual(painter.style(screen.HINT), fake.A_DIM)
+        self.assertEqual(painter.style(screen.ROW), fake.A_NORMAL)
+        self.assertEqual(painter.style(screen.FOCUS), fake.A_REVERSE)
+        self.assertEqual(painter.style(screen.ERROR), fake.A_BOLD)
+        self.assertEqual(fake.pairs, {})
+
+    def test_with_256_colors_the_title_is_green_the_cursor_a_green_bar_and_the_error_red(self):
+        fake = FakeCurses()
+        painter = screen.Painter(fake, screen.FULL, rich=True, limit=255)
+
+        title = painter.style(screen.TITLE)
+        self.assertEqual(fake.colors_of(title), (screen.GREEN_TEXT, -1))
+        self.assertTrue(title & fake.A_BOLD)
+        self.assertEqual(fake.colors_of(painter.style(screen.FOCUS)), (screen.ON_GREEN, scene.ACCENT))
+        self.assertEqual(fake.colors_of(painter.style(screen.ERROR)), (screen.RED_TEXT, -1))
+        self.assertEqual(painter.style(screen.HINT), fake.A_DIM, "the hint keeps the terminal's own color")
+
+    def test_with_8_colors_the_title_is_green_and_the_cursor_stays_reversed(self):
+        fake = FakeCurses()
+        painter = screen.Painter(fake, screen.BASIC, rich=False, limit=255)
+
+        self.assertEqual(fake.colors_of(painter.style(screen.TITLE)), (fake.COLOR_GREEN, -1))
+        self.assertEqual(painter.style(screen.FOCUS), fake.A_REVERSE)
+
+    def test_reuses_a_pair_and_falls_back_to_the_default_colors_past_the_limit(self):
+        fake = FakeCurses()
+        painter = screen.Painter(fake, screen.FULL, rich=True, limit=2)
+
+        first = painter.pair(10, 20)
+        self.assertEqual(painter.pair(10, 20), first)
+        painter.pair(30, 40)
+        self.assertEqual(painter.pair(50, 60), fake.A_NORMAL, "both pairs are in this frame")
+        self.assertEqual(len(fake.pairs), 2)
+
+    def test_a_new_frame_makes_the_pair_unused_longest_again(self):
+        fake = FakeCurses()
+        painter = screen.Painter(fake, screen.FULL, rich=True, limit=2)
+        painter.pair(10, 20)
+        painter.pair(30, 40)
+        painter.pair(10, 20)
+
+        painter.begin()
+        again = painter.pair(50, 60)
+
+        self.assertEqual(fake.colors_of(again), (50, 60))
+        self.assertEqual(fake.pairs, {1: (10, 20), 2: (50, 60)})
+        self.assertEqual(fake.colors_of(painter.pair(10, 20)), (10, 20))
+
+    def test_a_cell_takes_its_colors_and_its_weight(self):
+        fake = FakeCurses()
+        painter = screen.Painter(fake, screen.FULL, rich=True, limit=255)
+
+        bold = painter.cell(Style(214, 16, bold=True))
+
+        self.assertEqual(fake.colors_of(bold), (214, 16))
+        self.assertTrue(bold & fake.A_BOLD)
+        self.assertEqual(painter.cell(Style()), fake.A_NORMAL)
+        self.assertEqual(painter.cell(Style(dim=True)), fake.A_DIM)
+
+    def test_the_pair_limit_is_what_an_attribute_carries(self):
+        class Few:
+            COLOR_PAIRS = 64
+
+        class Many:
+            COLOR_PAIRS = 32767
+
+        self.assertEqual(screen.pair_limit(Few), 63)
+        self.assertEqual(screen.pair_limit(Many), 255)
+
+
+class FakeWindow:
+    def __init__(self, height, width, keys=()):
+        self.size = (height, width)
+        self.keys = list(keys)
+        self.cells = {}
+        self.timeouts = []
+        self.refreshed = 0
+
+    def getmaxyx(self):
+        return self.size
+
+    def erase(self):
+        self.cells = {}
+
+    def addstr(self, row, column, text, attribute=0):
+        for offset, character in enumerate(text):
+            self.cells[(row, column + offset)] = (character, attribute)
+
+    def refresh(self):
+        self.refreshed += 1
+
+    def keypad(self, on):
+        pass
+
+    def timeout(self, milliseconds):
+        self.timeouts.append(milliseconds)
+
+    def get_wch(self):
+        key = self.keys.pop(0)
+        if isinstance(key, Exception):
+            raise key
+        return key
+
+    def line(self, row):
+        width = self.size[1]
+        return "".join(self.cells.get((row, column), (" ", None))[0] for column in range(width))
+
+
+class FakePainter:
+    def __init__(self, rich):
+        self.rich = rich
+        self.frames = 0
+
+    def begin(self):
+        self.frames += 1
+
+    def style(self, style):
+        return ("style", style)
+
+    def cell(self, style):
+        return ("cell", style)
+
+
+class Drawing(unittest.TestCase):
+    """What lands on the window, with a painter that names each attribute."""
+
+    def test_a_large_terminal_with_256_colors_gets_the_whole_screen(self):
+        window = FakeWindow(40, 140)
+        painter = FakePainter(rich=True)
+
+        screen.draw(window, Sequence.start(screens()), painter, 5)
+
+        self.assertIn("◆ signalbox", window.line(0))
+        self.assertIn("v" + signalbox.__version__, window.line(0))
+        self.assertTrue(all(attribute[0] == "cell" for _, attribute in window.cells.values()))
+        self.assertEqual((painter.frames, window.refreshed), (1, 1))
+
+    def test_a_small_terminal_gets_the_plain_lines(self):
+        window = FakeWindow(20, 70)
+
+        screen.draw(window, Sequence.start(screens()), FakePainter(rich=True), 5)
+
+        self.assertEqual(window.cells[(0, 0)], ("1", ("style", screen.TITLE)))
+        self.assertTrue(window.line(0).startswith("1/4  Name"))
+
+    def test_without_whole_screens_any_size_gets_the_plain_lines(self):
+        window = FakeWindow(40, 140)
+
+        screen.draw(window, Sequence.start(screens()), FakePainter(rich=False), 5)
+
+        self.assertTrue(window.line(0).startswith("1/4  Name"))
+        self.assertNotIn("signalbox", "".join(window.line(row) for row in range(40)))
+
+    def test_whole_screens_are_drawn_again_each_tick_without_a_key(self):
+        window = FakeWindow(40, 140, keys=[curses.error("no input"), curses.error("no input"), 3])
+
+        ended = screen.drive(window, Sequence.start(screens()), FakePainter(rich=True), clock=lambda: 12.0)
+
+        self.assertEqual(ended.state, QUIT)
+        self.assertEqual(window.timeouts, [round(signal.TICK * 1000)])
+        self.assertEqual(window.refreshed, 3)
+
+    def test_the_plain_layout_waits_for_a_key_as_before(self):
+        window = FakeWindow(40, 140, keys=[3])
+
+        ended = screen.drive(window, Sequence.start(screens()), FakePainter(rich=False))
+
+        self.assertEqual(ended.state, QUIT)
+        self.assertEqual(window.timeouts, [])
+        self.assertEqual(window.refreshed, 1)
+
 
 
 def scripted(*lines):

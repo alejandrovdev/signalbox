@@ -17,7 +17,8 @@ def prerequisites(checks):
 def features(title):
     items = tuple(Item(name, name, feature.summary) for name, feature in config.FEATURES.items())
     needs = {name: feature.needs for name, feature in config.FEATURES.items()}
-    return Screen(answers.FEATURES, FEATURE_FLAGS, lambda given: Checklist.of(title, items, needs, given.get(answers.FEATURES) or ()))
+    facts = {name: (("tools", ", ".join(feature.tools) or "nothing"),) for name, feature in config.FEATURES.items()}
+    return Screen(answers.FEATURES, FEATURE_FLAGS, lambda given: Checklist.of(title, items, needs, given.get(answers.FEATURES) or (), facts))
 
 
 def name(check):

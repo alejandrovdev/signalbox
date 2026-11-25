@@ -3,6 +3,8 @@
     widgets    Choice, Checklist, TextField, Confirm, Summary: state machines driven by keys
     sequence   the screens of a command one after another, with back, next and quit
     screen     the curses renderer
+    scene      a step as a whole screen, composed on a `canvas`: the name in large pixels
+               (`wordmark`), the railway `signal`, the steps, panels and keys
     plain      numbered questions read with `input`, when the terminal cannot draw
 
 `Console` asks a sequence on the terminal when both input and output are one and curses

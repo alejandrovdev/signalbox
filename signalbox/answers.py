@@ -132,3 +132,21 @@ def init_summary(answers, folder, base, existing=None):
     elif existing is not None:
         lines.append('It replaces the settings of the linked project "%s".' % existing.name)
     return lines
+
+
+def shown_features(answers):
+    return ", ".join(config.ordered(answers.get(FEATURES) or ())) or None
+
+
+def setup_recap(answers, install_hooks):
+    """What setup's screens show of the answers so far, as (label, value) pairs."""
+    return (("features", shown_features(answers)), ("hooks", "install" if install_hooks else "not installed"))
+
+
+def init_recap(answers, base):
+    """What init's screens show of the answers so far, as (label, value) pairs; the gate only
+    with the merge lane."""
+    pairs = [("project", answers.get(NAME) or None), ("base", base), ("features", shown_features(answers))]
+    if needs_gate(answers):
+        pairs.append(("gate", answers.get(GATE) or None))
+    return tuple(pairs)

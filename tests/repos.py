@@ -222,6 +222,7 @@ class Keys:
         self.keys = list(keys)
         self.terminal = terminal
         self.shown = []  # every widget, before each key
+        self.sequences = []  # the sequence it was in, before each key
         self.asked = 0  # how many sequences it was asked
 
     def ask(self, sequence):
@@ -234,6 +235,7 @@ class Keys:
         self.asked += 1
         while sequence.state == RUNNING:
             self.shown.append(sequence.widget)
+            self.sequences.append(sequence)
             if not self.keys and not self.terminal:
                 raise Missing(sequence.flag, sequence.widget.title)
             if not self.keys:
@@ -252,3 +254,7 @@ class Keys:
     def last(self, title):
         """The widget of a screen as it was last shown."""
         return [widget for widget in self.shown if widget.title == title][-1]
+
+    def at(self, title):
+        """The sequence as it was when a screen was last shown."""
+        return [sequence for sequence in self.sequences if sequence.widget.title == title][-1]

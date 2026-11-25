@@ -9,8 +9,15 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from signalbox import cli, config, hooks
+from signalbox.ui import scene
 from signalbox.ui.widgets import BACKSPACE, DOWN, ENTER, SPACE
 from tests import repos
+
+
+def screen_text(sequence):
+    """The whole screen a sequence draws at its step, as text."""
+    canvas = scene.compose(scene.view_of(sequence, "1.0.0"), 140, 42, 0)
+    return "\n".join(canvas.line(row) for row in range(canvas.height))
 
 
 class Linking(repos.Scratch):
@@ -88,6 +95,25 @@ class Setup(Linking):
         self.assertRegex(body, r"ok       git \d+\.\d+")
 
 
+    def test_the_screens_show_the_default_features_and_that_the_hooks_install(self):
+        keys = repos.Keys(ENTER, ENTER, "n")
+        self.run_cli("setup", keys=keys)
+
+        features = ", ".join(config.PRESETS["recommended"])
+        for title in ("Prerequisites", "Default features", "Summary"):
+            self.assertEqual(scene.view_of(keys.at(title)).answers, {"features": features, "hooks": "install"}, title)
+        text = screen_text(keys.at("Summary"))
+        self.assertRegex(text, r"FEATURES +board, ")
+        self.assertRegex(text, r"HOOKS +install")
+
+    def test_with_no_hooks_the_screens_say_the_hooks_are_not_installed(self):
+        keys = repos.Keys(ENTER, DOWN, SPACE, ENTER, "n")  # session-brief off
+        self.run_cli("setup", "--no-hooks", keys=keys)
+
+        features = ", ".join(name for name in config.FEATURES if name != "session-brief")
+        self.assertEqual(scene.view_of(keys.at("Summary")).answers, {"features": features, "hooks": "not installed"})
+
+
 class Init(Linking):
     def setUp(self):
         super().setUp()
@@ -128,6 +154,39 @@ class Init(Linking):
         worktree = self.add_worktree(self.repo, "wt-a", "a")
         self.assertEqual(self.run_cli("init", "--preset", "minimal", "--yes", folder=worktree), 0)
         self.assertEqual(self.saved().projects[0].path, str(self.repo))
+
+    def test_the_screens_show_the_project_its_base_its_features_and_its_gate(self):
+        self.write(self.repo / "Makefile", "check:\n\ttrue\n")
+        keys = repos.Keys(ENTER, ENTER, ENTER, "n")
+        self.run_cli("init", "--base", "trunk", keys=keys, folder=self.repo)
+
+        features = ", ".join(config.PRESETS["recommended"])
+        shown = {"project": "shop", "base": "trunk", "features": features, "gate": "make check"}
+        for title in ("Project name", "Features", "Gate", "Summary"):
+            self.assertEqual(scene.view_of(keys.at(title)).answers, shown, title)
+        text = screen_text(keys.at("Summary"))
+        for label, value in (("PROJECT", "shop"), ("BASE", "trunk"), ("GATE", "make check")):
+            self.assertRegex(text, r"%s +%s" % (label, value))
+        self.assertFalse(self.file.exists())
+
+    def test_without_the_merge_lane_the_screens_show_no_gate(self):
+        keys = repos.Keys(ENTER, "n")
+        self.run_cli("init", "--preset", "minimal", keys=keys, folder=self.repo)
+
+        self.assertEqual(scene.view_of(keys.at("Summary")).answers, {"project": "shop", "base": "main", "features": "board, sweep"})
+        self.assertNotIn("GATE", screen_text(keys.at("Summary")))
+
+    def test_the_panel_about_a_feature_says_what_it_needs_what_needs_it_and_its_tools(self):
+        keys = repos.Keys(ENTER, DOWN, DOWN, "q")  # the cursor on merge-lane
+        self.run_cli("init", keys=keys, folder=self.repo)
+
+        text = screen_text(keys.at("Features"))
+        about = text[text.index("╭─ ◆ merge-lane") :]
+        self.assertIn(config.FEATURES["merge-lane"].summary[:40], about)
+        self.assertRegex(about, r"NEEDS +nothing else")
+        self.assertRegex(about, r"NEEDED BY +merge-guard")
+        self.assertRegex(about, r"TOOLS +git, gh")
+        self.assertFalse(self.file.exists())
 
     def test_without_the_merge_lane_no_gate_is_asked(self):
         keys = repos.Keys(ENTER, ENTER, "y")

@@ -42,15 +42,15 @@ def given_features(chosen):
     return features
 
 
-def asked(asker, steps, start, flags, yes):
+def asked(asker, steps, start, flags, yes, recap=None):
     """Ask the screens no flag answered, starting from `start`: the answers, or None when the
-    person quit or said no."""
+    person quit or said no. `recap` says what the screens show of the answers so far."""
     given = {key for key, value in flags.items() if value is not None}
     known = dict(start, **{key: flags[key] for key in given})
     if yes:
         given |= {key for key, value in known.items() if value is not None} | {answers.PREREQUISITES, answers.CONFIRM}
         known[answers.CONFIRM] = True
-    sequence = ui.Sequence.start(steps, known, given)
+    sequence = ui.Sequence.start(steps, known, given, recap)
     try:
         sequence = asker.ask(sequence)
     except ui.Missing as missing:
@@ -89,7 +89,9 @@ def setup(chosen, context):
         screens.features("Default features"),
         screens.confirm("Save these defaults?", lambda given: answers.setup_summary(configuration, given, settings, install)),
     ]
-    got = asked(context.asker, steps, answers.setup_answers(configuration), {answers.FEATURES: given_features(chosen)}, chosen.yes)
+    start = answers.setup_answers(configuration)
+    flags = {answers.FEATURES: given_features(chosen)}
+    got = asked(context.asker, steps, start, flags, chosen.yes, lambda given: answers.setup_recap(given, install))
     if got is None:
         out(NOTHING)
         return 1
@@ -174,7 +176,7 @@ def init(chosen, context):
         screens.confirm(question, lambda given: answers.init_summary(given, top, base, existing)),
     ]
     start = answers.init_answers(configuration, existing, answers.suggested_name(top, configuration), proposed_gate(top))
-    got = asked(context.asker, steps, start, flags, chosen.yes)
+    got = asked(context.asker, steps, start, flags, chosen.yes, lambda given: answers.init_recap(given, base))
     if got is None:
         out(NOTHING)
         return 1
