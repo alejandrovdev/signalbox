@@ -156,7 +156,7 @@ class Board(repos.Scratch):
         self.assertEqual(code, 0)
         self.assertNotIn("mergeLane", json.loads(self.text()))
 
-    def test_refuses_outside_a_git_repository_or_without_the_base_on_origin(self):
+    def test_refuses_outside_a_git_repository_or_when_origin_lacks_the_base(self):
         plain = self.tmp / "plain"
         plain.mkdir()
         with self.assertRaises(repository.Refusal) as caught:
@@ -168,9 +168,34 @@ class Board(repos.Scratch):
         self.git(repo, "init", "-q", "-b", "main")
         self.write(repo / "x.txt", "x")
         self.commit_all(repo, "base")
+        self.git(repo, "remote", "add", "origin", "https://example.com/shop.git")
         with self.assertRaises(repository.Refusal) as caught:
             self.open(repo)
         self.assertEqual(str(caught.exception), "no such ref: origin/main; fetch it with: git fetch origin main")
+
+    def test_a_repository_without_any_remote_uses_its_local_base(self):
+        repo = self.tmp / "repo"
+        repo.mkdir()
+        self.git(repo, "init", "-q", "-b", "main")
+        self.write(repo / "x.txt", "x")
+        self.commit_all(repo, "base")
+        a = self.add_worktree(repo, "wt-a", "a")
+        self.write(a / "x.txt", "a")
+        opened = self.open(a)
+        self.assertEqual((opened.remote_base, opened.tip), ("main", self.git(repo, "rev-parse", "main").strip()))
+        brief.brief(opened, self.host, self.out)
+        self.assertTrue(self.text().startswith("This worktree: a, 0 behind main, no conflict with main.\n"), self.text())
+
+    def test_a_repository_with_origin_but_no_fetched_base_still_asks_to_fetch_it(self):
+        repo = self.tmp / "repo"
+        repo.mkdir()
+        self.git(repo, "init", "-q", "-b", "main")
+        self.write(repo / "x.txt", "x")
+        self.commit_all(repo, "base")
+        self.git(repo, "remote", "add", "origin", "https://example.com/shop.git")
+        with self.assertRaises(repository.Refusal) as caught:
+            self.open(repo)
+        self.assertIn("fetch it with: git fetch origin main", str(caught.exception))
 
     def test_the_base_is_the_configured_one_else_origin_head_else_main(self):
         repo = self.base_repo()

@@ -24,11 +24,12 @@ class Repository:
     git: object
     where: worktrees.Where
     base: str  # the base branch, as named on origin
-    tip: str  # the commit origin/<base> points to
+    tip: str  # the commit origin/<base> points to; the local base's in a repository with no remote
+    local: bool = False  # a repository with no remote at all: its own base branch is the base
 
     @property
     def remote_base(self):
-        return "%s/%s" % (REMOTE, self.base)
+        return self.base if self.local else "%s/%s" % (REMOTE, self.base)
 
     @property
     def top(self):
@@ -51,6 +52,11 @@ def open(project, host, folder):
         raise Refusal("not a git repository: %s" % Path(folder))
     base = base_branch(project, git, where.top)
     tip = worktrees.commit_of(git, where.top, "refs/remotes/%s/%s" % (REMOTE, base))
+    if tip is None and not git.out(where.top, "remote").split():
+        # A repository with no remote: what is merged is what its own base branch holds.
+        tip = worktrees.commit_of(git, where.top, "refs/heads/%s" % base)
+        if tip is not None:
+            return Repository(project, git, where, base, tip, local=True)
     if tip is None:
         raise Refusal("no such ref: %s/%s; fetch it with: git fetch %s %s" % (REMOTE, base, REMOTE, base))
     return Repository(project, git, where, base, tip)

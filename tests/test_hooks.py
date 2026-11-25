@@ -163,6 +163,7 @@ class Hook(repos.Scratch):
         self.assertEqual(self.hook("session-start", {"cwd": str(self.repo)}), 0)
         self.link()
         self.git(self.repo, "update-ref", "-d", "refs/remotes/origin/main")
+        self.git(self.repo, "remote", "add", "origin", "https://example.com/shop.git")  # a base never fetched
         self.assertEqual(self.hook("session-start", {"cwd": str(self.repo)}), 0)
         self.assertEqual((self.printed, self.errors), ([], []))
 

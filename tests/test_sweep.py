@@ -69,6 +69,19 @@ class Sweep(repos.Scratch):
         done = self.merged_worktree(repo, "wt-done", "feat/done")
         self.assertIn("sweep: removed worktree %s" % done, self.sweep(repo))
 
+    def test_sweeps_a_repository_without_any_remote_against_its_local_base(self):
+        repo = self.base_repo()
+        self.git(repo, "update-ref", "-d", "refs/remotes/origin/main")
+        done = self.add_worktree(repo, "wt-done", "feat/done")
+        self.write(done / "done.txt", "done")
+        self.commit_all(done, "done", hours_ago(2))
+        self.git(repo, "merge", "-q", "--no-ff", "-m", "Merge", "feat/done", date=hours_ago(-1))
+        self.assertEqual(
+            self.sweep(repo),
+            "sweep: removed worktree %s (feat/done, merged into main)\n"
+            "sweep: deleted branch feat/done (merged into main)\n" % done,
+        )
+
     def test_the_build_output_is_the_projects(self):
         repo = self.base_repo()
         self.write(repo / ".git/info/exclude", "node_modules/\n.cache/\n")
