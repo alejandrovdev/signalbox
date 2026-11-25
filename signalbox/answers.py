@@ -1,0 +1,115 @@
+"""What the screens of `setup` and `init` answer, turned into a configuration, and a
+configuration turned into the answers they start from: the only module that knows both.
+Answers are a dict under the keys below. Nothing here asks, prints or writes.
+"""
+
+import dataclasses
+import re
+from pathlib import Path
+
+from . import config
+
+PREREQUISITES, FEATURES, NAME, GATE, CONFIRM = "prerequisites", "features", "name", "gate", "confirm"
+NAME_SHAPE = "a project's name has lowercase letters, digits and hyphens, at most 32"
+FIRST = "recommended"  # the preset the features start from when nothing was chosen
+
+
+def setup_answers(configuration):
+    return {FEATURES: configuration.defaults.features or config.PRESETS[FIRST]}
+
+
+def with_setup(configuration, answers):
+    return dataclasses.replace(configuration, defaults=config.Defaults(config.ordered(answers[FEATURES])))
+
+
+def init_answers(configuration, existing, suggested, gate):
+    if existing is not None:
+        return {NAME: existing.name, FEATURES: existing.features, GATE: existing.gate or gate}
+    return {NAME: suggested, FEATURES: configuration.defaults.features or config.PRESETS[FIRST], GATE: gate}
+
+
+def needs_gate(answers):
+    return "merge-lane" in (answers.get(FEATURES) or ())
+
+
+def with_project(configuration, answers, folder, existing=None, base=None):
+    """(the configuration with init's project, the project). A linked project is replaced
+    where it is, keeping the keys init does not ask; a new one is added last."""
+    features = config.ordered(answers[FEATURES])
+    gate = answers.get(GATE) if needs_gate(answers) else (existing.gate if existing is not None else None)
+    if existing is not None:
+        project = dataclasses.replace(
+            existing, name=answers[NAME], features=features, gate=gate, base=existing.base if base is None else base
+        )
+        projects = tuple(project if other is existing else other for other in configuration.projects)
+    else:
+        project = config.Project(answers[NAME], str(folder), features, base, gate)
+        projects = configuration.projects + (project,)
+    return dataclasses.replace(configuration, projects=projects), project
+
+
+def without(configuration, project):
+    return dataclasses.replace(configuration, projects=tuple(other for other in configuration.projects if other != project))
+
+
+def name_problem(name, configuration, existing=None):
+    if not config.PROJECT_NAME.fullmatch(name or ""):
+        return NAME_SHAPE
+    for other in configuration.projects:
+        if other is not existing and other.name == name:
+            return 'the project "%s" already has this name' % name
+    return ""
+
+
+def suggested_name(folder, configuration):
+    """A folder's name made a project's: lowercase, anything else a hyphen, at most 32, and
+    numbered when another project has it."""
+    base = re.sub(r"[^a-z0-9]+", "-", Path(folder).name.lower()).strip("-")[:32].strip("-") or "project"
+    name, number = base, 2
+    while name_problem(name, configuration):
+        tail = "-%d" % number
+        name = base[: 32 - len(tail)].rstrip("-") + tail
+        number += 1
+    return name
+
+
+def gate_problem(gate):
+    return "" if (gate or "").strip() else "name the command the lane runs, such as make check"
+
+
+def features_problem(features):
+    return "; ".join(
+        '"%s" needs "%s"' % (name, needed)
+        for name in config.ordered(features)
+        for needed in config.FEATURES[name].needs
+        if needed not in features
+    )
+
+
+def setup_summary(configuration, answers, settings, install_hooks):
+    lines = ["Default features: %s" % ", ".join(config.ordered(answers[FEATURES]))]
+    if install_hooks:
+        lines.append("Claude Code hooks: installed in %s (they do nothing outside a linked repository)" % settings)
+    else:
+        lines.append("Claude Code hooks: not installed (--no-hooks)")
+    if configuration.projects:
+        lines.append("Linked projects: %s; they keep their features." % ", ".join(project.name for project in configuration.projects))
+    else:
+        lines.append("No project yet: link one from its folder with signalbox init.")
+    return lines
+
+
+def init_summary(answers, folder, base, existing=None):
+    lines = [
+        "Project: %s" % answers[NAME],
+        "Folder: %s" % (existing.path if existing is not None else folder),
+        "Base: origin/%s" % base,
+        "Features: %s" % ", ".join(config.ordered(answers[FEATURES])),
+    ]
+    if needs_gate(answers):
+        lines.append("Gate: %s" % answers[GATE])
+    if existing is not None and existing.name != answers[NAME]:
+        lines.append('This repository is linked already, as "%s": this renames it to "%s".' % (existing.name, answers[NAME]))
+    elif existing is not None:
+        lines.append('It replaces the settings of the linked project "%s".' % existing.name)
+    return lines
