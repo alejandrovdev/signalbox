@@ -43,7 +43,7 @@ team) running Claude Code sessions side by side in one repository hosted on GitH
 ## Requirements
 
 - macOS with [Homebrew](https://brew.sh).
-- Python 3.11 or later, from Homebrew.
+- Python 3.11 or later. The Homebrew formula installs and uses Homebrew's Python 3.15.
 - git 2.38 or later (the board reads conflicts with `git merge-tree --write-tree`). git is
   looked for in your `PATH`, then in Homebrew's folder.
 - [GitHub CLI](https://cli.github.com) (`gh`), signed in (`gh auth login`), for the merge
