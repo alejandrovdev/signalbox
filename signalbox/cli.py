@@ -2,14 +2,15 @@
 
     setup                      once: check the prerequisites, choose the defaults, install the hooks
     init [folder]              link a repository's folder, choosing its features
-    deinit [folder]            unlink it
+    deinit [folder]            unlink it (--shared-hooks: also remove the repository's hooks)
     status                     the board: every worktree of this repository
     brief, changes             what the session hooks print
     sweep                      remove merged worktrees and merged local branches
     merge <pr>                 the merge lane
     metrics                    flow metrics
     doctor                     check what each project needs on this Mac
-    hook <event>               what Claude Code's hooks run
+    hook <event>               what Claude Code's hooks run; each also records where its
+                               session stands, so the sweep keeps that worktree
     uninstall                  remove the hooks
 
 A command about a repository runs in a folder of it (any worktree), and says how to link one
@@ -28,7 +29,7 @@ from pathlib import Path
 
 from . import __version__, config, doctor, hooks, linked, linking, names, ui
 from . import repository as repositories
-from .atoms import tools
+from .atoms import sessions, tools
 from .features import board, brief, guard, lane, metrics, sweep
 from .host import Host
 
@@ -210,6 +211,7 @@ def run_hook(context):
         return 0
     if context.chosen.shared and hooks.installed(names.claude_settings(context.host.environ)):
         return 0  # the person's own hooks run it: once is enough
+    sessions.record(context.host, data)  # where the session stands, for the sweep; cheap and silent
     if event == "pre-tool-use":
         command = (data.get("tool_input") or {}).get("command") if isinstance(data.get("tool_input"), dict) else None
         if data.get("tool_name") != "Bash" or not isinstance(command, str):
@@ -314,6 +316,11 @@ def parser():
     chosen_features(linking_folder)
     unlinking = command("deinit", lambda context: linking.deinit(context.chosen, context), "Unlink a repository's folder.")
     unlinking.add_argument("folder", nargs="?", help="a folder of the repository (default: this one)")
+    unlinking.add_argument(
+        "--shared-hooks",
+        action="store_true",
+        help="also remove the hooks init --shared-hooks wrote in the repository's .claude/settings.json",
+    )
     command(
         "doctor",
         lambda context: doctor.report(context.configuration(), context.host, names.claude_settings(context.host.environ), context.out),

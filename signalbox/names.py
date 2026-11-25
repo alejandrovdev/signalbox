@@ -3,11 +3,12 @@
 Nothing here belongs to one Mac or to one repository.
 
     configuration  ~/Library/Application Support/<tool>/config.toml
+    sessions       ~/Library/Application Support/<tool>/sessions/<session id>.json
     logs           ~/Library/Logs/<tool>/<project>/
     merge worktree ~/Library/Caches/<tool>/<project>/merge.noindex
     in a repository's git common directory: <tool>-lane.lock, <tool>-lane.json;
     in each worktree's git directory: <tool>-changes.json
-    variables      <TOOL>_CONFIG, <TOOL>_LOG_DIR, <TOOL>_CACHE_DIR,
+    variables      <TOOL>_CONFIG, <TOOL>_LOG_DIR, <TOOL>_CACHE_DIR, <TOOL>_SESSIONS_DIR,
                    <TOOL>_CLAUDE_SETTINGS, <TOOL>_CLAUDE_PROJECTS, and <TOOL>_GIT, <TOOL>_GH for a tool
 """
 
@@ -59,6 +60,11 @@ def log_root(environ=None):
 
 def cache_root(environ=None):
     return Path(chosen("cache_dir", environ) or library("Caches", TOOL))
+
+
+def sessions_dir(environ=None):
+    """Where the hooks record where each Claude Code session stands, one file a session."""
+    return Path(chosen("sessions_dir", environ) or library("Application Support", TOOL, "sessions"))
 
 
 def project_logs(project_name, environ=None):

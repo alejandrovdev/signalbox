@@ -6,7 +6,10 @@ lane merged (by squash or rebase, whose commits the base does not reach).
     sweep(repository, host, out, dry_run, as_json, caller)   say what it removed and kept; 0
 
 A merged worktree stays, with the reason said, when it is the main checkout; when it holds
-the caller's directory; when it has uncommitted changes or untracked files; when it is
+the caller's directory; when a live Claude Code session stands in it (the hooks record where
+each session stands, and a session runs while its process does: its pid with the start date
+recorded), or `ps` cannot say; when it has uncommitted changes or untracked files; when its
+index tells git not to check some files (skip-worktree or assume-unchanged); when it is
 locked, unless the lock is a Claude Code agent's and that agent is gone (no process with the
 lock's pid and start date runs) or finished (its record says so); when it holds ignored
 files that are not the project's build output; when it was used since its branch was
@@ -14,7 +17,7 @@ merged (its HEAD moved later), or no reflog says; when a process runs in it, or 
 cannot say. A branch is never deleted when it is the base, points at the base's tip (a
 branch just cut), or is the first branch of an agent that still runs. A remote-tracking ref
 goes with its branch only when the base reaches it too: the sweep never deletes a branch on
-origin.
+origin. A sweep (not a dry run) also removes the records of sessions that no longer run.
 """
 
 import json
@@ -23,7 +26,7 @@ import re
 from pathlib import Path
 
 from .. import names
-from ..atoms import logs, patterns, worktrees
+from ..atoms import logs, patterns, sessions, worktrees
 
 # The lock Claude Code puts on an agent's worktree: the agent, and its session's pid and start.
 AGENT_LOCK = re.compile(r"^claude agent (\S+) \(pid (\d+) start (.+)\)$")
@@ -82,6 +85,40 @@ class Agents:
         return " ".join(started.split()) in dates
 
 
+class Sessions:
+    """The sessions the hooks recorded, each asked once whether it still runs."""
+
+    def __init__(self, host):
+        self.host = host
+        self.found = None
+
+    def all(self):
+        """[(session id, record, path, whether it runs: True, False, None when ps fails)]"""
+        if self.found is None:
+            self.found = [(session, data, path, sessions.running(self.host, data)) for session, data, path in sessions.recorded(self.host)]
+        return self.found
+
+    def standing_in(self, root):
+        """Why a recorded session keeps a worktree, or None."""
+        unknown = False
+        for session, data, _, alive in self.all():
+            if not inside(data["cwd"], root):
+                continue
+            if alive:
+                return "a live Claude Code session stands in it (session %s)" % session[:8]
+            unknown = unknown or alive is None
+        return "cannot tell whether a recorded session still runs (ps failed)" if unknown else None
+
+    def prune(self):
+        """Remove the records of the sessions that no longer run."""
+        for _, _, path, alive in self.all():
+            if alive is False:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+
+
 class Sweep:
     def __init__(self, repository, host, dry_run, caller):
         self.repository = repository
@@ -91,6 +128,7 @@ class Sweep:
         self.dry_run = dry_run
         self.callers = [real(folder) for folder in caller]
         self.agents = Agents(host)
+        self.sessions = Sessions(host)
         self.read = False
         self.running = None
 
@@ -145,10 +183,18 @@ class Sweep:
         root = real(tree.path)
         if any(inside(caller, root) for caller in self.callers):
             return "it holds the caller's directory; a sweep run from elsewhere removes it"
+        standing = self.sessions.standing_in(root)
+        if standing is not None:
+            return standing
         # --untracked-files: a `status.showUntrackedFiles=no` setting must not hide a file.
         status = self.git.out(tree.path, "status", "--porcelain", "--ignored", "--untracked-files=normal").splitlines()
         if any(line and not line.startswith("!! ") for line in status):
             return "uncommitted changes"
+        # An edit git is told not to look at is not in the status: S is skip-worktree, a
+        # lowercase tag assume-unchanged.
+        tags = (line[:1] for line in self.git.out(tree.path, "ls-files", "-v").splitlines())
+        if any(tag == "S" or tag.islower() for tag in tags):
+            return "files git is told not to check (skip-worktree or assume-unchanged)"
         if tree.locked is not None and self.agents.holds(tree.locked, tree.path):
             return "locked (%s)" % tree.locked if tree.locked else "locked"
         output = self.repository.project.build_output
@@ -233,6 +279,8 @@ class Sweep:
             if not self.dry_run and not self.delete_branch(branch, tip, through_lane):
                 continue
             deleted.append(branch)
+        if not self.dry_run:
+            self.sessions.prune()
         return outcomes, deleted
 
 

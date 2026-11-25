@@ -203,6 +203,43 @@ class Deinit(Linking):
         self.assertEqual(self.run_cli("deinit", str(self.tmp / "gone")), 0)
         self.assertEqual(self.saved().projects, ())
 
+    def shared_hooks(self, repo):
+        """`init --shared-hooks`, with a hook of the team's own beside ours; the settings file."""
+        shared = repo / ".claude" / "settings.json"
+        mine = {"type": "command", "command": "echo mine"}
+        self.write(shared, json.dumps({"hooks": {"Stop": [{"hooks": [mine]}]}}))
+        self.assertEqual(self.run_cli("init", "--preset", "minimal", "--yes", "--shared-hooks", folder=repo), 0)
+        self.assertEqual(hooks.installed(shared), list(hooks.EVENTS))
+        return shared, {"hooks": {"Stop": [{"hooks": [mine]}]}}
+
+    def test_with_shared_hooks_removes_the_hooks_init_wrote_in_the_repository(self):
+        repo = self.base_repo("shop")
+        shared, theirs = self.shared_hooks(repo)
+        self.assertEqual(self.run_cli("deinit", "--shared-hooks", folder=repo), 0)
+        self.assertEqual(self.saved().projects, ())
+        self.assertIn("Removed the shared hooks from %s: commit that file." % shared, self.printed)
+        self.assertEqual(json.loads(shared.read_text()), theirs)
+
+    def test_without_the_flag_says_the_shared_hooks_stay_and_how_to_remove_them(self):
+        repo = self.base_repo("shop")
+        shared, _ = self.shared_hooks(repo)
+        self.assertEqual(self.run_cli("deinit", folder=repo), 0)
+        self.assertEqual(hooks.installed(shared), list(hooks.EVENTS))
+        self.assertIn("The shared hooks stay in %s: remove them with: signalbox deinit %s --shared-hooks" % (shared, repo), self.printed)
+        # The command it names works on the repository it just unlinked.
+        self.assertEqual(self.run_cli("deinit", str(repo), "--shared-hooks"), 0)
+        self.assertEqual(self.printed, ["Removed the shared hooks from %s: commit that file." % shared])
+        self.assertEqual(hooks.installed(shared), [])
+
+    def test_says_nothing_of_shared_hooks_a_repository_does_not_have(self):
+        repo = self.base_repo("shop")
+        self.link(repo)
+        self.assertEqual(self.run_cli("deinit", folder=repo), 0)
+        self.assertFalse(any("shared hooks" in line for line in self.printed), self.printed)
+        self.link(repo)
+        self.assertEqual(self.run_cli("deinit", "--shared-hooks", folder=repo), 0)
+        self.assertIn("No shared hook was in %s." % (repo / ".claude" / "settings.json"), self.printed)
+
     def test_a_folder_of_no_project_says_which_are_linked(self):
         self.link(self.base_repo("shop"))
         other = self.base_repo("other")
@@ -258,6 +295,7 @@ class Uninstall(Linking):
         repo = self.base_repo("shop")
         self.link(repo)
         self.write(self.tmp / "logs" / "shop" / "lane.jsonl", "{}\n")
+        self.write(Path(self.environ["SIGNALBOX_SESSIONS_DIR"]) / "s1.json", "{}\n")
 
         self.assertEqual(self.run_cli("uninstall"), 0)
         self.assertEqual(json.loads(self.settings.read_text()), {"model": "opus"})
@@ -268,6 +306,7 @@ class Uninstall(Linking):
         self.assertEqual(self.run_cli("uninstall", "--purge"), 0)
         self.assertFalse(self.file.exists())
         self.assertFalse((self.tmp / "logs").exists())
+        self.assertFalse(Path(self.environ["SIGNALBOX_SESSIONS_DIR"]).exists(), "the sessions' records go too")
 
     def test_purge_refuses_while_a_lane_runs(self):
         from signalbox.atoms import lock
