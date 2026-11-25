@@ -236,6 +236,8 @@ Unlinks the project of a folder (its main checkout or any worktree):
 - removes the merge worktree signalbox made for it, unless a lane runs in it at that moment;
   a merge worktree you placed with `merge_worktree` is left, with the command that removes
   it;
+- with `--shared-hooks`, removes the hooks `init --shared-hooks` wrote in the repository's
+  `.claude/settings.json` (commit that file); without it, says that they stay;
 - leaves as they are, and says so: its logs, the lane's lock and state and each worktree's
   `signalbox-changes.json` in the repository's git folder, and the Claude Code hooks, which
   do nothing in a repository no project links.
@@ -392,7 +394,7 @@ signalbox: ~/notes is in no linked project. Link its repository with: signalbox 
 | `metrics` | `--since <YYYY-MM-DD>`, `--until <YYYY-MM-DD>`, `--json`, `--no-github` | Print flow metrics. `--since`: the first local day (default: 14 days ago); `--until`: the local day the window ends at, excluded (default: now). |
 | `doctor` | | Check what signalbox and each project need on this Mac. |
 | `hook <event>` | `--shared` | What Claude Code's hooks run: `session-start`, `user-prompt-submit` or `pre-tool-use`, with the hook's JSON on standard input. |
-| `uninstall` | `--purge` | Remove the Claude Code hooks; with `--purge`, also the configuration, the logs and the merge worktrees. |
+| `uninstall` | `--purge` | Remove the Claude Code hooks; with `--purge`, also the configuration, the logs, the merge worktrees and the sessions' records. |
 
 You do not need to type `hook`: Claude Code runs it.
 
@@ -569,7 +571,10 @@ worktree just cut from the base is reachable too, and stays.
 | --- | --- |
 | `the main checkout` | the repository's own folder is never removed |
 | `it holds the caller's directory; a sweep run from elsewhere removes it` | you (or the shell that ran the sweep) are inside it |
+| `a live Claude Code session stands in it (session <id>)` | a session that is still running last stood in it (see below) |
+| `cannot tell whether a recorded session still runs (ps failed)` | `ps` could not be read |
 | `uncommitted changes` | changed or untracked files (read with `--untracked-files=normal`, whatever your git settings say) |
+| `files git is told not to check (skip-worktree or assume-unchanged)` | files marked with `git update-index --skip-worktree` or `--assume-unchanged`, whose edits `git status` does not show |
 | `locked (<reason>)` | locked with `git worktree lock`. A Claude Code agent's lock (`claude agent <id> (pid <pid> start <date>)`) holds only while the agent runs: once no process with that pid and start date runs, or Claude Code's record says the agent finished in that very worktree, the lock is released and the worktree removed. |
 | `ignored files that are not build output (<path>)` | an ignored file that `build_output` does not list |
 | `used since its branch was merged` | its HEAD moved after the base received the branch: it was cut from a commit the base already held, or somebody checked out or committed in it since |
@@ -577,6 +582,14 @@ worktree just cut from the base is reachable too, and stays.
 | `a process runs in it (pid <n>)` | a process has its current directory inside it |
 | `cannot tell whether a process runs in it (lsof failed)` | `lsof` could not be read |
 | `git worktree remove failed: <git's message>` | git refused (the sweep never uses `--force`) |
+
+**Sessions.** Between two commands no process of a Claude Code session stands in its
+worktree, so `lsof` alone cannot tell that a session still works there (for example one that
+merged its own branch and goes on). The hooks record where each session stands: one small
+file per session in `~/Library/Application Support/signalbox/sessions/`, with its current
+directory and its `claude` process (found once per session, by its start date). While that
+process runs, the worktree it last stood in stays; an idle session keeps it until it ends. A
+sweep (not a dry run) removes the records of sessions that ended.
 
 **Branches.** A merged local branch is deleted only when no worktree holds it, it is not the
 base, it does not point at the base's tip (a branch just cut), and it is not the first branch
@@ -686,7 +699,11 @@ sections (`--json` gives the same as one object; a measure with nothing to measu
 `n/a` there and `null` in JSON):
 
 - **Window**: the start and end, in UTC.
-- **Merges**: the merge commits on the base's first-parent line in the window.
+- **Merges**: what landed on the base's first-parent line in the window, following the
+  project's `merge_method`: with `merge`, each merge commit; with `squash`, each commit GitHub
+  wrote (committer `noreply@github.com`) or the lane recorded; with `rebase`, each run of
+  consecutive commits GitHub wrote with one committer time (a rebased pull request), named by
+  its newest commit. A commit pushed straight to the base is never a merge.
   - `Total`, and a table of merges per day.
   - `Stale`: merges of a branch that did not hold the base's previous tip, so the result
     was never tested as such by the branch's own checks. `Stale share` is their part of the
@@ -701,8 +718,9 @@ sections (`--json` gives the same as one object; a measure with nothing to measu
   - `Outside the merge lane`: merge commits the lane did not make (merged on GitHub or from
     a terminal).
 
-  Squash and rebase merges write no merge commit, so this section counts only the merges
-  done with `merge_method = "merge"` (or merge commits made by hand).
+  With `squash` and `rebase`, `Stale` and `Stale with files changed on both sides` cannot be
+  measured (a landing keeps no second parent): the section says so, and the JSON has
+  `"method"` and `null` there. For a rebase run, `Documentation only` reads the whole run.
 - **Pull requests**: how many GitHub merged in the window (from the latest 500), and the
   minutes from open to merge: median, 90th percentile and maximum. This is the lead time.
   With `--no-github`, or without `gh`, it says it was not measured.
@@ -722,6 +740,7 @@ Mac's time zone, or the `TZ` variable.
 | Where | What |
 | --- | --- |
 | `~/Library/Application Support/signalbox/config.toml` | the configuration; the folder holds a `.signalbox` file that marks it as signalbox's |
+| `~/Library/Application Support/signalbox/sessions/<session id>.json` | where each Claude Code session stands, written by the hooks (see [the sweep](#the-sweep)) |
 | `~/Library/Logs/signalbox/<project>/lane.jsonl` | the lane log, one JSON line per run |
 | `~/Library/Logs/signalbox/<project>/gates/` | the whole output of each failed gate |
 | `~/Library/Caches/signalbox/<project>/merge.noindex` | the merge worktree (unless `merge_worktree` places it) |
@@ -859,7 +878,7 @@ fetched is not listed at all: fetch first.
 
    The configuration, the logs and the merge worktrees are kept, and it says where.
    `signalbox uninstall --purge` removes them too: the merge worktrees signalbox made, the
-   logs folder, the caches folder and the configuration file. It refuses, and changes
+   logs folder, the caches folder, the sessions' records and the configuration file. It refuses, and changes
    nothing, while a merge lane runs in a linked repository.
 
 3. Remove the command and the tap. Do this after `signalbox uninstall`: the hooks run the
@@ -872,7 +891,7 @@ fetched is not listed at all: fetch first.
 
 Left in place: the lane's lock and state and each worktree's `signalbox-changes.json` in
 each repository's git folder, the shared hooks a repository's `.claude/settings.json` holds
-(`init --shared-hooks`: remove them from that file), and a merge worktree placed with
+(`signalbox deinit --shared-hooks` removes them; commit that file), and a merge worktree placed with
 `merge_worktree` (`uninstall --purge` prints the command that removes it).
 
 ## Development
@@ -920,13 +939,14 @@ never touches your own configuration, logs, caches or Claude Code settings:
 | `SIGNALBOX_CACHE_DIR` | `~/Library/Caches/signalbox`, where the merge worktrees go |
 | `SIGNALBOX_CLAUDE_SETTINGS` | `~/.claude/settings.json`, where the hooks go |
 | `SIGNALBOX_CLAUDE_PROJECTS` | `~/.claude/projects`, where the sweep reads Claude Code's agent records |
+| `SIGNALBOX_SESSIONS_DIR` | `~/Library/Application Support/signalbox/sessions`, where the hooks record each session |
 | `SIGNALBOX_GIT`, `SIGNALBOX_GH`, `SIGNALBOX_CLAUDE` | the program found in `PATH` or Homebrew's folders |
 
 ```sh
 scratch=$(mktemp -d)
 export SIGNALBOX_CONFIG="$scratch/config.toml" SIGNALBOX_LOG_DIR="$scratch/logs" \
   SIGNALBOX_CACHE_DIR="$scratch/cache" SIGNALBOX_CLAUDE_SETTINGS="$scratch/settings.json" \
-  SIGNALBOX_CLAUDE_PROJECTS="$scratch/projects"
+  SIGNALBOX_CLAUDE_PROJECTS="$scratch/projects" SIGNALBOX_SESSIONS_DIR="$scratch/sessions"
 python3 -m signalbox doctor
 ```
 
