@@ -6,10 +6,8 @@ One train per track for your Claude Code sessions: signalbox lets several sessio
 one repository at once, each in its own git worktree, without stepping on each other, and
 merges their pull requests one at a time, each checked on the merged result.
 
-> **Status: stable, private.** From 1.0.0, what [Compatibility](#compatibility) lists
-> changes only in a major release; the [changelog](CHANGELOG.md) says what each release
-> brings. The repository and its Homebrew tap are private until publication: `brew install`
-> works only for a GitHub account with access to both.
+> **Status: stable.** From 1.0.0, what [Compatibility](#compatibility) lists changes only
+> in a major release; the [changelog](CHANGELOG.md) says what each release brings.
 
 ![signalbox setup: the railway signal, the steps, the features panel and the details of the option under the cursor](docs/images/setup.png)
 
@@ -20,7 +18,8 @@ Contents: [The problem it solves](#the-problem-it-solves) · [Requirements](#req
 [Commands](#commands) · [Compatibility](#compatibility) · [How it works](#how-it-works) ·
 [Repositories that depend on each other](#repositories-that-depend-on-each-other) ·
 [The merge guard](#the-merge-guard) · [Files it writes](#files-it-writes) ·
-[Troubleshooting](#troubleshooting) · [Uninstall](#uninstall) · [Development](#development)
+[Troubleshooting](#troubleshooting) · [Uninstall](#uninstall) · [Development](#development) ·
+[Contributing](#contributing) · [License](#license)
 
 ## The problem it solves
 
@@ -61,9 +60,6 @@ signalbox --version
 The tap is `alejandrovdev/signalbox`. Installing adds the `signalbox` command and nothing
 else: no hook is installed and no repository is touched until you run `signalbox setup` and
 `signalbox init`.
-
-While the repositories are private, Homebrew downloads them with `git`, which uses your own
-GitHub credentials (for example `gh auth setup-git`).
 
 ## Quick start
 
@@ -344,7 +340,7 @@ at most 32 characters long.
 | `path` | text | yes | The repository's main checkout, absolute or starting with `~/`. `init` writes the full path. One project per folder. |
 | `preset` | text | one of the two | `minimal` or `recommended`. |
 | `features` | list of text | one of the two | At least one feature, including the features each one needs. |
-| `base` | text | no | The base branch, as named on `origin`. Default: the branch `origin/HEAD` names (`git remote set-head origin --auto` records it), else `main`. |
+| `base` | text | no | The base branch, as named on `origin`. Default: the branch `origin/HEAD` names (`git remote set-head origin --auto` records it), else `main`. In a repository with no remote at all, the local branch of that name is the base: the board, the brief, the sweep and the metrics work against it; the merge lane needs `origin` on GitHub. |
 | `gate` | text | with `merge-lane` | The command the merge lane runs in the merge worktree; it passes with exit code 0. Not empty. |
 | `gate_env` | table of text | no | Variables added to the gate's environment, for example `{ TEST_WORKERS = "4" }`. Each name is a shell variable name. |
 | `gate_failed_step` | text | no | A regular expression with a group named `step`, read from a failed gate's output. The last match names the step that failed, in the lane's message, the commit status and the log. |
@@ -657,3 +653,12 @@ python3 -m signalbox doctor
 
 The rehearsal is still real where it acts: `merge` merges on GitHub, and `sweep` removes
 worktrees and branches of the repository you run it in.
+
+## Contributing
+
+Bug reports and pull requests are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md). Report a
+vulnerability privately, as [SECURITY.md](SECURITY.md) says.
+
+## License
+
+signalbox is released under the [MIT License](LICENSE).
