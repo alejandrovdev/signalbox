@@ -8,7 +8,7 @@ Nothing here belongs to one Mac or to one repository.
     in a repository's git common directory: <tool>-lane.lock, <tool>-lane.json;
     in each worktree's git directory: <tool>-changes.json
     variables      <TOOL>_CONFIG, <TOOL>_STATE_DIR, <TOOL>_LOG_DIR, <TOOL>_CACHE_DIR,
-                   <TOOL>_CLAUDE_SETTINGS, and <TOOL>_GIT, <TOOL>_GH for a tool
+                   <TOOL>_CLAUDE_SETTINGS, <TOOL>_CLAUDE_PROJECTS, and <TOOL>_GIT, <TOOL>_GH for a tool
 """
 
 import os
@@ -82,3 +82,8 @@ def default_merge_worktree(project_name, environ=None):
 def claude_settings(environ=None):
     """The person's Claude Code settings, where the user-level hooks go."""
     return Path(chosen("claude_settings", environ) or Path.home() / ".claude" / "settings.json")
+
+
+def claude_projects(environ=None):
+    """Where Claude Code keeps each session's records, its agents' among them."""
+    return Path(chosen("claude_projects", environ) or Path.home() / ".claude" / "projects")
