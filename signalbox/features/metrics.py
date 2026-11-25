@@ -3,6 +3,12 @@ merges on the base's first-parent line, the pull requests GitHub merged (through
 merge lane's log and the worktrees open now, over a window of local days. No model is
 called and nothing is fetched: the base is read as last fetched.
 
+A merge follows the project's `merge_method`: a merge commit for `merge`; for `squash`, a
+commit GitHub wrote (committer noreply@github.com) or the lane names; for `rebase`, a run of
+consecutive commits with one committer time and committer, named by its newest, that GitHub
+wrote or the lane names. A commit pushed straight to the base is no merge. Without a second
+parent, staleness is not measured for `squash` and `rebase`.
+
     report(repository, host, out, since, until, as_json, github)   print the metrics; 0
     parse_date(text)                                               a YYYY-MM-DD date
 
@@ -26,6 +32,7 @@ from ..repository import Refusal
 DEFAULT_DAYS = 14
 TOP_FILES = 10
 QUICK_MERGE_SECONDS = 120
+GITHUB_COMMITTER = "noreply@github.com"
 DOCS_FOLDER = "docs/"
 NO_GH = "gh is not installed"
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -160,14 +167,54 @@ def first_parent_merges(git, top, tip):
     return list(reversed(found))
 
 
+def first_parent_commits(git, top, tip):
+    """Every commit on the first-parent line of `tip`, oldest first: (hash, committer time,
+    committer email, first parent or None)."""
+    found = []
+    for line in git.out(top, "log", "--first-parent", "--format=%H %ct %ce %P", tip).splitlines():
+        words = line.split()
+        if len(words) >= 3:
+            found.append((words[0], int(words[1]), words[2], words[3] if len(words) > 3 else None))
+    return list(reversed(found))
+
+
+def landings(git, top, tip, method, lane_commits):
+    """What landed on the base's first-parent line, oldest first: (hash, time, the commit before
+    it or None, its second parent or None). For `merge`, the merge commits. For `squash`, each
+    commit GitHub wrote or the lane names. For `rebase`, each run of consecutive commits with one
+    committer time and committer, named by its newest, when GitHub wrote it or the lane names
+    that newest; the commit before is the one before the run's oldest."""
+    if method == "merge":
+        return first_parent_merges(git, top, tip)
+    commits = first_parent_commits(git, top, tip)
+    if method == "rebase":
+        runs = []
+        for commit in commits:
+            if runs and runs[-1][-1][1:3] == commit[1:3]:
+                runs[-1].append(commit)
+            else:
+                runs.append([commit])
+    else:
+        runs = [[commit] for commit in commits]
+    found = []
+    for run in runs:
+        commit, at, email, _ = run[-1]
+        if email == GITHUB_COMMITTER or commit in lane_commits:
+            found.append((commit, at, run[0][3], None))
+    return found
+
+
 def measure_merges(repository, window, lane_commits):
     git, top = repository.git, repository.top
     start, end, tz = window
+    method = repository.project.merge_method
 
     def changed(old, new):
+        if old is None:
+            return paths(git.out(top, "ls-tree", "-r", "--name-only", "-z", new))
         return paths(git.out(top, "diff", "--name-only", "-z", old, new))
 
-    every = first_parent_merges(git, top, repository.tip)
+    every = landings(git, top, repository.tip, method, lane_commits)
     per_day, shared = {}, {}
     total = stale = shared_merges = docs_only = quick = outside = 0
     max_behind = None
@@ -183,6 +230,8 @@ def measure_merges(repository, window, lane_commits):
             quick += 1
         if documentation(changed(first, commit), repository.project.feature_docs):
             docs_only += 1
+        if second is None:
+            continue
         if git.run(top, "merge-base", "--is-ancestor", first, second, accepted=(0, 1)).returncode == 0:
             continue
         stale += 1
@@ -195,7 +244,7 @@ def measure_merges(repository, window, lane_commits):
             shared_merges += 1
             for file in both:
                 shared[file] = shared.get(file, 0) + 1
-    return {
+    found = {
         "total": total,
         "perDay": sorted_keys(per_day),
         "stale": {"count": stale, "share": None if total == 0 else round2(stale / total), "maxBehind": max_behind},
@@ -204,6 +253,9 @@ def measure_merges(repository, window, lane_commits):
         "within2Minutes": quick,
         "outsideLane": outside,
     }
+    if method == "merge":
+        return found
+    return dict({"method": method}, **found) | {"stale": None, "staleSharedFiles": None}
 
 
 # pull requests
@@ -337,21 +389,25 @@ def markdown(project, report, github):
     lines += table(["Since", "Until"], [[report["window"]["since"], report["window"]["until"]]]) + [""]
 
     lines += ["## Merges", ""]
-    lines += metric_table(
-        [
-            ["Total", merges["total"]],
+    rows = [["Total", merges["total"]]]
+    if merges["stale"] is not None:
+        rows += [
             ["Stale", merges["stale"]["count"]],
             ["Stale share", merges["stale"]["share"]],
             ["Stale, most commits behind", merges["stale"]["maxBehind"]],
             ["Stale with files changed on both sides", merges["staleSharedFiles"]["merges"]],
-            ["Documentation only", merges["docsOnly"]],
-            ["Within 2 minutes of the previous one", merges["within2Minutes"]],
-            ["Outside the merge lane", merges["outsideLane"]],
         ]
-    )
+    rows += [
+        ["Documentation only", merges["docsOnly"]],
+        ["Within 2 minutes of the previous one", merges["within2Minutes"]],
+        ["Outside the merge lane", merges["outsideLane"]],
+    ]
+    lines += metric_table(rows)
+    if merges["stale"] is None:
+        lines += ["Not measured: a %s merge keeps no second parent." % merges["method"], ""]
     if merges["perDay"]:
         lines += table(["Day", "Merges"], list(merges["perDay"].items())) + [""]
-    if merges["staleSharedFiles"]["topFiles"]:
+    if merges["staleSharedFiles"] is not None and merges["staleSharedFiles"]["topFiles"]:
         rows = [[item["file"], item["merges"]] for item in merges["staleSharedFiles"]["topFiles"]]
         lines += table(["File changed on both sides", "Stale merges"], rows) + [""]
 

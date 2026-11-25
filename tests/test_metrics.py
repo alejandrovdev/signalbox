@@ -14,6 +14,8 @@ SINCE = datetime.date(2026, 11, 10)
 UNTIL = datetime.date(2026, 11, 13)
 FEATURE_DOCS = ("plans/*.txt",)
 GH_LIST = "pr list --state merged --limit 500 --json number,createdAt,mergedAt"
+GITHUB = ("GitHub", "noreply@github.com")
+PERSON = ("Person", "person@example.com")
 
 
 def lane_run(started_at, status, merge_commit=None, wait=0, gate=None, attempts=1, failed_step=None):
@@ -301,6 +303,122 @@ class Metrics(repos.Scratch):
         self.assertIn("| main | 0 | 0 | no |", text)
         with self.assertRaises(ValueError):
             json.loads(text)
+
+    # squash and rebase
+
+    def land(self, repo, files, date, by=GITHUB, message="land"):
+        """Commits the files straight on main at `date`, committed by `by` (GitHub by default)."""
+        for file, content in files.items():
+            self.write(repo / file, content)
+        self.git(repo, "add", ".")
+        name, email = by
+        self.git(repo, "-c", "user.name=" + name, "-c", "user.email=" + email, "commit", "-qm", message, date=date)
+        return self.git(repo, "rev-parse", "HEAD").strip()
+
+    def new_repo(self):
+        repo = self.tmp / "repo"
+        repo.mkdir()
+        self.git(repo, "init", "-q", "-b", "main")
+        self.write(repo / "src/app.py", lines())
+        self.write(repo / "README.md", lines())
+        self.commit_all(repo, "base", "2026-11-01T00:00:00Z")
+        return repo
+
+    def repo_with_squash_merges(self):
+        """Main's first-parent line, every commit a single one: s0 before the window; s1 (code)
+        and s2 (README.md, a minute later) written by GitHub; a direct push; s3 committed by a
+        person, which the lane's log names; a direct push half a minute before s4 (a file the
+        feature-document globs match); s5 after the window. Returns (repo, s1, s3)."""
+        repo = self.new_repo()
+        self.land(repo, {"docs/guide.md": "guide"}, "2026-11-05T12:00:00Z")
+        s1 = self.land(repo, {"src/app.py": lines({1: "s1"})}, "2026-11-10T12:00:00Z")
+        self.land(repo, {"README.md": lines({1: "s2"})}, "2026-11-10T12:01:00Z")
+        self.land(repo, {"other.txt": "direct"}, "2026-11-11T10:00:00Z", by=PERSON)
+        s3 = self.land(repo, {"src/app.py": lines({3: "s3"})}, "2026-11-11T12:00:00Z", by=PERSON)
+        self.land(repo, {"other.txt": "direct again"}, "2026-11-12T09:59:30Z", by=PERSON)
+        self.land(repo, {"plans/data.txt": "1,2"}, "2026-11-12T10:00:00Z")
+        self.land(repo, {"notes/later.txt": "later"}, "2026-11-14T10:00:00Z")
+        self.git(repo, "update-ref", "refs/remotes/origin/main", "main")
+        return repo, s1, s3
+
+    def repo_with_rebase_merges(self):
+        """Main's first-parent line in runs of commits GitHub wrote with one committer time: r0
+        before the window; r1, three commits (code, then documentation last); r2, two commits
+        a minute later, documentation only; two direct pushes in the same second; r3, one commit
+        (a file the feature-document globs match); r4, two commits; r5 after the window.
+        Returns (repo, the last commit of r1, the first commit of r4)."""
+        repo = self.new_repo()
+        self.land(repo, {"docs/guide.md": "guide"}, "2026-11-05T12:00:00Z")
+        self.land(repo, {"src/app.py": lines({1: "r1"})}, "2026-11-10T12:00:00Z")
+        self.land(repo, {"src/b.py": "b"}, "2026-11-10T12:00:00Z")
+        r1 = self.land(repo, {"docs/a.md": "a"}, "2026-11-10T12:00:00Z")
+        self.land(repo, {"README.md": lines({1: "r2"})}, "2026-11-10T12:01:00Z")
+        self.land(repo, {"docs/x.md": "x"}, "2026-11-10T12:01:00Z")
+        self.land(repo, {"other.txt": "direct"}, "2026-11-11T10:00:00Z", by=PERSON)
+        self.land(repo, {"other.txt": "direct again"}, "2026-11-11T10:00:00Z", by=PERSON)
+        self.land(repo, {"plans/data.txt": "1,2"}, "2026-11-11T10:01:00Z")
+        r4 = self.land(repo, {"src/app.py": lines({3: "r4"})}, "2026-11-12T10:00:00Z")
+        self.land(repo, {"src/c.py": "c"}, "2026-11-12T10:00:00Z")
+        self.land(repo, {"notes/later.txt": "later"}, "2026-11-14T10:00:00Z")
+        self.git(repo, "update-ref", "refs/remotes/origin/main", "main")
+        return repo, r1, r4
+
+    def test_counts_each_squash_merge_github_or_the_lane_wrote_and_no_direct_push(self):
+        repo, s1, s3 = self.repo_with_squash_merges()
+        self.lane_log([lane_run("2026-11-10T11:58:00Z", "merged", s1), lane_run("2026-11-11T11:58:00Z", "merged", s3)])
+        report = self.report(repo, project={"merge_method": "squash"})
+        self.assertEqual(
+            report["merges"],
+            {
+                "method": "squash",
+                "total": 4,
+                "perDay": {"2026-11-10": 2, "2026-11-11": 1, "2026-11-12": 1},
+                "stale": None,
+                "staleSharedFiles": None,
+                "docsOnly": 2,
+                "within2Minutes": 1,
+                "outsideLane": 2,
+            },
+        )
+
+        text = self.report(repo, as_json=False, project={"merge_method": "squash"})
+        self.assertIn("\n## Merges\n", text)
+        self.assertIn("| Total | 4 |", text)
+        self.assertIn("| Documentation only | 2 |", text)
+        self.assertIn("| Outside the merge lane | 2 |", text)
+        self.assertIn("\nNot measured: a squash merge keeps no second parent.\n", text)
+        self.assertNotIn("Stale", text)
+        self.assertIn("| 2026-11-11 | 1 |", text)
+
+    def test_counts_each_run_of_rebased_commits_as_one_merge_named_by_its_last(self):
+        repo, r1, r4 = self.repo_with_rebase_merges()
+        self.lane_log([lane_run("2026-11-10T11:58:00Z", "merged", r1), lane_run("2026-11-12T09:58:00Z", "merged", r4)])
+        report = self.report(repo, project={"merge_method": "rebase"})
+        self.assertEqual(
+            report["merges"],
+            {
+                "method": "rebase",
+                "total": 4,
+                "perDay": {"2026-11-10": 2, "2026-11-11": 1, "2026-11-12": 1},
+                "stale": None,
+                "staleSharedFiles": None,
+                "docsOnly": 2,
+                "within2Minutes": 1,
+                "outsideLane": 3,
+            },
+        )
+
+        text = self.report(repo, as_json=False, project={"merge_method": "rebase"})
+        self.assertIn("| Total | 4 |", text)
+        self.assertIn("\nNot measured: a rebase merge keeps no second parent.\n", text)
+        self.assertNotIn("Stale", text)
+
+    def test_counts_only_merge_commits_for_the_merge_method(self):
+        repo, _, _ = self.repo_with_squash_merges()
+        merges = self.report(repo, project={"merge_method": "merge"})["merges"]
+        self.assertEqual(merges["total"], 0)
+        self.assertNotIn("method", merges)
+        self.assertEqual(merges["stale"], {"count": 0, "share": None, "maxBehind": None})
 
     def test_reads_a_date_as_year_month_day(self):
         self.assertEqual(metrics.parse_date("2026-11-10"), datetime.date(2026, 11, 10))
