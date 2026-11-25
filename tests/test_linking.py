@@ -33,6 +33,12 @@ class Linking(repos.Scratch):
     def saved(self):
         return config.load(self.file)
 
+    def group(self, name, *projects):
+        """Add a group of the linked projects to the saved configuration."""
+        saved = self.saved()
+        configuration = config.Config(saved.projects, saved.defaults, saved.groups + (config.Group(name, projects),))
+        config.save(configuration, self.file)
+
     def link(self, folder, name="shop", features=None, **values):
         values.setdefault("gate", "make check")
         project = config.Project(name, str(folder), tuple(config.FEATURES) if features is None else features, **values)
@@ -139,6 +145,16 @@ class Init(Linking):
         [project] = self.saved().projects
         self.assertEqual((project.name, project.features, project.gate, project.base), ("web", ("board", "merge-lane"), "make test", "trunk"))
 
+    def test_renaming_a_project_renames_it_in_its_group(self):
+        self.link(self.base_repo("api"), name="api", features=("board",))
+        self.link(self.repo, features=("board",))
+        self.group("platform", "api", "shop")
+
+        self.assertEqual(self.run_cli("init", "--name", "store", "--yes", folder=self.repo), 0)
+
+        self.assertEqual(self.saved().groups, (config.Group("platform", ("api", "store")),))
+        self.assertIn('Renamed "shop" to "store".', self.printed)
+
     def test_a_feature_without_what_it_needs_is_a_usage_error(self):
         self.assertEqual(self.run_cli("init", "--feature", "merge-guard", "--yes", folder=self.repo), 2)
         self.assertIn('"merge-guard" needs "merge-lane"', self.usage)
@@ -187,6 +203,28 @@ class Deinit(Linking):
         self.assertEqual([project.name for project in self.saved().projects], ["blog"])
         self.assertEqual(self.printed[0], 'Unlinked "shop" (%s) from %s.' % (repo, self.file))
         self.assertTrue(any(line.startswith("Left as they are:") for line in self.printed))
+
+    def test_a_removed_project_leaves_its_group_and_says_so(self):
+        for name in ("api", "web", "shop"):
+            self.link(self.base_repo(name), name=name, features=("board",))
+        self.group("platform", "api", "shop", "web")
+
+        self.assertEqual(self.run_cli("deinit", folder=self.tmp / "shop"), 0)
+
+        self.assertEqual(self.saved().groups, (config.Group("platform", ("api", "web")),))
+        self.assertIn('Removed "shop" from the group "platform", which keeps: api, web.', self.printed)
+
+    def test_a_group_left_with_one_project_goes_and_says_so(self):
+        for name in ("api", "shop", "blog"):
+            self.link(self.base_repo(name), name=name, features=("board",))
+        self.group("platform", "api", "shop")
+
+        self.assertEqual(self.run_cli("deinit", folder=self.tmp / "shop"), 0)
+
+        self.assertEqual(self.saved().groups, ())
+        self.assertEqual([project.name for project in self.saved().projects], ["api", "blog"])
+        self.assertIn('Removed the group "platform": only "api" was left in it.', self.printed)
+        self.assertEqual(self.printed[0], 'Unlinked "shop" (%s) from %s.' % (self.tmp / "shop", self.file))
 
     def test_removes_the_merge_worktree_it_made(self):
         repo = self.base_repo("shop")

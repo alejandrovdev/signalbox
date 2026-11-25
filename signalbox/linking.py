@@ -272,8 +272,11 @@ def deinit(chosen, context):
         listed = ", ".join("%s (%s)" % (other.name, other.path) for other in configuration.projects)
         out("No project is linked to %s. %s" % (folder, "The linked projects: " + listed if listed else names.no_project()))
         return 1
-    config.save(answers.without(configuration, project), context.config_file)
+    remaining, said = answers.without(configuration, project)
+    config.save(remaining, context.config_file)
     out('Unlinked "%s" (%s) from %s.' % (project.name, project.path, context.config_file))
+    for line in said:
+        out(line)
     remove_merge_worktree(project, host, out)
     left = [
         "its logs in %s" % names.project_logs(project.name, host.environ),

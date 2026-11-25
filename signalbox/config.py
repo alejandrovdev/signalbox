@@ -17,6 +17,9 @@ One TOML file that `setup` and `init` write and a person may edit by hand:
     merge_method = "merge"
     legacy_locks = ["old-lane.lock"]  # another tool's lane lock, taken too
 
+    [groups.platform]                 # repositories that depend on each other
+    projects = ["api", "shop"]        # in dependency order: each merges after those before it
+
 `[defaults]` is optional: what a new project starts from. Reading the file checks its shape
 only: types, names, that each feature has the features it builds on, and that a project with
 the merge lane names its gate. Whether a folder exists or a tool is installed is for
@@ -114,6 +117,7 @@ PROJECT_KEYS = (
     "gate_files",
 )
 DEFAULTS_KEYS = ("preset", "features")
+GROUP_KEYS = ("projects",)
 
 
 class ConfigError(Exception):
@@ -160,12 +164,25 @@ class Defaults:
 
 
 @dataclass(frozen=True)
+class Group:
+    """Projects whose repositories depend on each other, in dependency order."""
+
+    name: str
+    projects: tuple  # project names
+
+
+@dataclass(frozen=True)
 class Config:
     projects: tuple = ()
     defaults: Defaults = Defaults()
+    groups: tuple = ()
 
     def project(self, name):
         return next((project for project in self.projects if project.name == name), None)
+
+    def group_of(self, name):
+        """The group a project is in, or None."""
+        return next((group for group in self.groups if name in group.projects), None)
 
 
 def default_path():
@@ -348,6 +365,50 @@ def defaults_from(table, problems):
     return Defaults(features)
 
 
+def group_from(name, table, known, taken, problems):
+    """A group, or None when something is wrong with it. `taken` maps each project already
+    in a group to that group's name."""
+    key = "groups.%s" % name
+    if not PROJECT_NAME.fullmatch(name):
+        problems.append((key, "a group's name has lowercase letters, digits and hyphens, at most 32"))
+        return None
+    if not isinstance(table, dict):
+        problems.append((key, "must be a table"))
+        return None
+    before = len(problems)
+    members = table.get("projects")
+    if "projects" not in table:
+        problems.append((key + ".projects", "missing"))
+    elif not isinstance(members, list) or not all(isinstance(member, str) for member in members):
+        problems.append((key + ".projects", "must be a list of project names"))
+    else:
+        for member in members:
+            if member in taken:
+                problems.append((key + ".projects", 'the project "%s" is already in the group "%s"' % (member, taken[member])))
+            elif member not in known:
+                problems.append((key + ".projects", 'unknown project "%s"' % member))
+            taken.setdefault(member, name)
+        if len(set(members)) < 2:
+            problems.append((key + ".projects", "name at least two projects"))
+    for other in table:
+        if other not in GROUP_KEYS:
+            problems.append(("%s.%s" % (key, other), "unknown key"))
+    return Group(name, tuple(members)) if len(problems) == before else None
+
+
+def groups_from(data, known, problems):
+    tables = data.get("groups", {})
+    if not isinstance(tables, dict):
+        problems.append(("groups", "must be a table of groups"))
+        return ()
+    groups, taken = [], {}
+    for name, table in tables.items():
+        group = group_from(name, table, known, taken, problems)
+        if group is not None:
+            groups.append(group)
+    return tuple(groups)
+
+
 def parse(text):
     """The configuration a TOML text describes; ConfigError lists everything wrong with it."""
     try:
@@ -356,7 +417,7 @@ def parse(text):
         raise ConfigError([("", str(error))])
     problems = []
     for key in data:
-        if key not in ("defaults", "projects"):
+        if key not in ("defaults", "projects", "groups"):
             problems.append((key, "unknown key"))
     defaults = defaults_from(data.get("defaults", {}), problems)
     tables = data.get("projects", {})
@@ -373,9 +434,10 @@ def parse(text):
             problems.append(("projects.%s.path" % name, 'the project "%s" already uses this folder' % folders[folder]))
         folders.setdefault(folder, name)
         projects.append(project)
+    groups = groups_from(data, set(tables), problems)
     if problems:
         raise ConfigError(problems)
-    return Config(tuple(projects), defaults)
+    return Config(tuple(projects), defaults, groups)
 
 
 def quoted(value):
@@ -431,6 +493,10 @@ def dump(config):
         if lines:
             lines.append("")
         lines += project_lines(project)
+    for group in config.groups:
+        if lines:
+            lines.append("")
+        lines += ["[groups.%s]" % group.name, "projects = %s" % listed(group.projects)]
     return "\n".join(lines) + "\n" if lines else ""
 
 

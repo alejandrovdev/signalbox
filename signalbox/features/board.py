@@ -3,6 +3,9 @@ which files two of them change at once, and whether the merge lane is busy. Comp
 git on every call, so nobody maintains it; it never fetches.
 
     status(repository, host, out, as_json, github)   print the board; 0
+    group_status(name, opened, host, out, as_json, github)
+                                                     the board of each project of a group,
+                                                     in its order; 1 when one cannot be read
     feature_documents(files, patterns)               the feature documents among changed files
     open_pull_requests(repository, host)             branch: number from gh, or None
 """
@@ -135,3 +138,27 @@ def status(repository, host, out, as_json=False, github=True):
     result, with_pulls = report(repository, host, github)
     out(json.dumps(result, indent=2) if as_json else markdown(repository.project, result, with_pulls))
     return 0
+
+
+def group_status(name, opened, host, out, as_json=False, github=True):
+    """`opened` holds, in the group's order, (project, its Repository or why it cannot be read)."""
+    boards, failed = [], False
+    for project, repository in opened:
+        if isinstance(repository, str):
+            failed = True
+            boards.append((project, {"error": repository}, False))
+        else:
+            result, with_pulls = report(repository, host, github)
+            boards.append((project, result, with_pulls))
+    if as_json:
+        projects = [dict({"project": project.name}, **result) for project, result, _ in boards]
+        out(json.dumps({"group": name, "projects": projects}, indent=2))
+    else:
+        parts = []
+        for project, result, with_pulls in boards:
+            if "error" in result:
+                parts.append("# Board of %s\n\nNot read: %s" % (project.name, result["error"]))
+            else:
+                parts.append(markdown(project, result, with_pulls))
+        out("\n\n".join(parts))
+    return 1 if failed else 0
