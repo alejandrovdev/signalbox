@@ -26,10 +26,10 @@ import signal
 import sys
 from pathlib import Path
 
-from . import __version__, config, linked, names
+from . import __version__, config, doctor, hooks, linked, linking, names, ui
 from . import repository as repositories
 from .atoms import tools
-from .features import board, brief, guard, lane, sweep
+from .features import board, brief, guard, lane, metrics, sweep
 from .host import Host
 
 FEATURE_NAMES = {
@@ -73,12 +73,13 @@ def in_background(words, host, folder):
 class Context:
     """What a command about a repository needs: the configuration, the host, the folder."""
 
-    def __init__(self, chosen, host, out, err, folder):
+    def __init__(self, chosen, host, out, err, folder, asker=None):
         self.chosen = chosen
         self.host = host
         self.out = out
         self.err = err
         self.folder = folder
+        self.asker = asker or ui.Console()
         self.config_file = chosen.config or names.config_file(host.environ)
 
     def configuration(self):
@@ -172,6 +173,19 @@ def merge_command(context):
         signal.signal(signal.SIGTERM, previous)
 
 
+def metrics_command(context):
+    chosen = context.chosen
+    return metrics.report(
+        context.repository("metrics"),
+        context.host,
+        context.out,
+        since=chosen.since,
+        until=chosen.until,
+        as_json=chosen.json,
+        github=not chosen.no_github,
+    )
+
+
 def read_hook_input(stdin):
     try:
         data = json.loads(stdin.read())
@@ -194,6 +208,8 @@ def run_hook(context):
     data = read_hook_input(context.chosen.stdin)
     if data is None:
         return 0
+    if context.chosen.shared and hooks.installed(names.claude_settings(context.host.environ)):
+        return 0  # the person's own hooks run it: once is enough
     if event == "pre-tool-use":
         command = (data.get("tool_input") or {}).get("command") if isinstance(data.get("tool_input"), dict) else None
         if data.get("tool_name") != "Bash" or not isinstance(command, str) or "merge" not in command:
@@ -261,12 +277,52 @@ def parser():
     merging.add_argument(
         "--allow-gate-change", action="store_true", help="run a pull request that changes the gate's own files"
     )
+    measuring = command("metrics", metrics_command, "Print flow metrics: merges, pull requests, the merge lane, the worktrees now.")
+    measuring.add_argument("--since", type=metrics.parse_date, metavar="<YYYY-MM-DD>", help="the first local day (default: 14 days ago)")
+    measuring.add_argument("--until", type=metrics.parse_date, metavar="<YYYY-MM-DD>", help="the local day the window ends at, excluded (default: now)")
+    measuring.add_argument("--json", action="store_true", help="print one JSON object")
+    measuring.add_argument("--no-github", action="store_true", help="leave out the pull requests (no gh)")
     hooking = command("hook", hook_command, "What Claude Code's hooks run (reads the hook's JSON on stdin).")
     hooking.add_argument("event", choices=HOOK_EVENTS)
+    hooking.add_argument("--shared", action="store_true", help="run from a repository's settings: nothing when the person's hooks run")
+
+    def chosen_features(added):
+        chosen = added.add_mutually_exclusive_group()
+        chosen.add_argument("--preset", choices=tuple(config.PRESETS), help="a preset of features")
+        chosen.add_argument(
+            "--feature",
+            action="append",
+            choices=tuple(config.FEATURES),
+            metavar="<feature>",
+            help="a feature, repeated for each one: %s" % ", ".join(config.FEATURES),
+        )
+        added.add_argument("--yes", action="store_true", help="take what each screen no flag answers starts from, and confirm")
+
+    setting_up = command(
+        "setup", lambda context: linking.setup(context.chosen, context), "Set up once: check the prerequisites, choose the defaults, install the Claude Code hooks."
+    )
+    chosen_features(setting_up)
+    setting_up.add_argument("--no-hooks", action="store_true", help="do not install the hooks in ~/.claude/settings.json")
+    linking_folder = command("init", lambda context: linking.init(context.chosen, context), "Link a repository's folder, choosing its features and gate.")
+    linking_folder.add_argument("folder", nargs="?", help="a folder of the repository (default: this one)")
+    linking_folder.add_argument("--name", metavar="<name>", help="the project's name")
+    linking_folder.add_argument("--gate", metavar="<command>", help="what the merge lane runs on each merged result")
+    linking_folder.add_argument("--base", metavar="<branch>", help="the base branch (default: origin's, else main)")
+    linking_folder.add_argument("--shared-hooks", action="store_true", help="also write the hooks in the repository's .claude/settings.json")
+    chosen_features(linking_folder)
+    unlinking = command("deinit", lambda context: linking.deinit(context.chosen, context), "Unlink a repository's folder.")
+    unlinking.add_argument("folder", nargs="?", help="a folder of the repository (default: this one)")
+    command(
+        "doctor",
+        lambda context: doctor.report(context.configuration(), context.host, names.claude_settings(context.host.environ), context.out),
+        "Check what signalbox and each project need on this Mac.",
+    )
+    removing = command("uninstall", lambda context: linking.uninstall(context.chosen, context), "Remove the Claude Code hooks.")
+    removing.add_argument("--purge", action="store_true", help="also remove the configuration, the logs and the merge worktrees")
     return top
 
 
-def main(arguments, host=None, out=None, err=None, stdin=None, folder=None):
+def main(arguments, host=None, out=None, err=None, stdin=None, folder=None, asker=None):
     """Run one command; its exit code. `host` stands in for the machine, `out` and `err` for
     the two outputs, `folder` for the current directory."""
     out = out or printer(sys.stdout)
@@ -290,9 +346,13 @@ def main(arguments, host=None, out=None, err=None, stdin=None, folder=None):
         here = Path(folder) if folder else Path.cwd()
     except OSError:
         here = Path(host.environ.get("PWD") or "/")
-    context = Context(chosen, host, out, err, here)
+    context = Context(chosen, host, out, err, here, asker)
     try:
         return chosen.run(context)
+    except linking.Usage as error:
+        prog = "%s %s" % (names.TOOL, chosen.command)
+        sys.stderr.write("usage: %s ...\n%s: error: %s\n" % (prog, prog, error))
+        return 2
     except config.ConfigError as error:
         for key, problem in error.problems:
             err("%s: %s%s" % (context.config_file, key + ": " if key else "", problem))

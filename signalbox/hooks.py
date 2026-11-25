@@ -19,7 +19,7 @@ EVENTS = {
     "user-prompt-submit": ("UserPromptSubmit", None, 15),
     "pre-tool-use": ("PreToolUse", "Bash", 10),
 }
-OURS = re.compile(r"signalbox'? hook (%s)$" % "|".join(EVENTS))
+OURS = re.compile(r"signalbox'? hook (%s)( --shared)?$" % "|".join(EVENTS))
 
 
 class SettingsError(Exception):
@@ -58,8 +58,8 @@ def ours(hook, event=None):
     return found is not None and (event is None or found.group(1) == event)
 
 
-def entry(command, event):
-    return {"type": "command", "command": "%s hook %s" % (command, event), "timeout": EVENTS[event][2]}
+def entry(command, event, suffix=""):
+    return {"type": "command", "command": "%s hook %s%s" % (command, event, suffix), "timeout": EVENTS[event][2]}
 
 
 def without_ours(groups, event):
@@ -88,12 +88,13 @@ def installed(path):
     return found
 
 
-def install(path, command):
+def install(path, command, suffix=""):
+    """`suffix` follows each command: " --shared" in a repository's own settings."""
     data = read(path)
     hooks = dict(data.get("hooks", {}))
     changed = []
     for event, (name, matcher, _) in EVENTS.items():
-        wanted = entry(command, event)
+        wanted = entry(command, event, suffix)
         groups = hooks.get(name) or []
         present = [
             hook for group in groups if isinstance(group, dict) for hook in group.get("hooks") or [] if ours(hook, event)
@@ -126,5 +127,8 @@ def remove(path):
             else:
                 del hooks[name]
     if removed:
-        write(path, dict(data, hooks=hooks))
+        data = dict(data, hooks=hooks)
+        if not hooks:
+            del data["hooks"]  # only ours were there
+        write(path, data)
     return removed

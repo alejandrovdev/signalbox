@@ -202,3 +202,43 @@ def lane_record(pull_request, started_at, status):
         "tree": "c" * 40,
         "mergeCommit": "d" * 40 if status == "merged" else None,
     }
+
+
+class Keys:
+    """Stands in for a person at the terminal: presses the keys given, in order, and keeps
+    each widget it was shown. `terminal` is whether a person is there at all."""
+
+    def __init__(self, *keys, terminal=True):
+        self.keys = list(keys)
+        self.terminal = terminal
+        self.shown = []  # every widget, before each key
+        self.asked = 0  # how many sequences it was asked
+
+    def ask(self, sequence):
+        """Press the keys; with no person at a terminal and no key left, end as input that
+        ended does."""
+        from signalbox.ui import RUNNING, Missing
+
+        if sequence.state != RUNNING:
+            return sequence
+        self.asked += 1
+        while sequence.state == RUNNING:
+            self.shown.append(sequence.widget)
+            if not self.keys and not self.terminal:
+                raise Missing(sequence.flag, sequence.widget.title)
+            if not self.keys:
+                raise AssertionError('no key was left to press on "%s"' % sequence.widget.title)
+            sequence = sequence.press(self.keys.pop(0))
+        return sequence
+
+    def titles(self):
+        """The titles of the screens shown, in order, each once in a row."""
+        titles = []
+        for widget in self.shown:
+            if not titles or titles[-1] != widget.title:
+                titles.append(widget.title)
+        return titles
+
+    def last(self, title):
+        """The widget of a screen as it was last shown."""
+        return [widget for widget in self.shown if widget.title == title][-1]

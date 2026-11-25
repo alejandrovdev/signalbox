@@ -54,6 +54,14 @@ class CommandLine(repos.Scratch):
         self.assertIn("unrecognized arguments: 105", self.usage)
         self.assertEqual(calls(), [])
 
+    def test_metrics_in_a_linked_project_and_a_bad_date(self):
+        repo = self.base_repo()
+        self.link(repo)
+        self.assertEqual(self.run_cli("metrics", "--json", "--no-github", "--since", "2026-11-01", folder=repo), 0)
+        self.assertEqual(json.loads(self.printed[0])["base"], "origin/main")
+        self.assertEqual(self.run_cli("metrics", "--since", "yesterday", folder=repo), 2)
+        self.assertIn("YYYY-MM-DD", self.usage)
+
     def test_a_command_outside_a_linked_project_says_how_to_link_it(self):
         repo = self.base_repo()
         self.assertEqual(self.run_cli("status", folder=repo), 1)
