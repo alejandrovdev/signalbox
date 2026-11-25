@@ -11,6 +11,7 @@ setting and hook of the file is kept as it was.
 import json
 import os
 import re
+import stat
 from pathlib import Path
 
 # event as `signalbox hook` names it: (Claude Code's event, its matcher, the timeout in seconds)
@@ -44,10 +45,13 @@ def read(path):
 
 
 def write(path, data):
-    path = Path(path)
+    """Replace the file in one step: the file a link points to, with the mode it had."""
+    path = Path(os.path.realpath(path))
     path.parent.mkdir(parents=True, exist_ok=True)
     draft = path.with_name(path.name + ".signalbox-new")
     draft.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf8")
+    if path.exists():
+        os.chmod(draft, stat.S_IMODE(path.stat().st_mode))
     os.replace(draft, path)
 
 

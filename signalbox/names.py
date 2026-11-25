@@ -7,7 +7,7 @@ Nothing here belongs to one Mac or to one repository.
     merge worktree ~/Library/Caches/<tool>/<project>/merge.noindex
     in a repository's git common directory: <tool>-lane.lock, <tool>-lane.json;
     in each worktree's git directory: <tool>-changes.json
-    variables      <TOOL>_CONFIG, <TOOL>_STATE_DIR, <TOOL>_LOG_DIR, <TOOL>_CACHE_DIR,
+    variables      <TOOL>_CONFIG, <TOOL>_LOG_DIR, <TOOL>_CACHE_DIR,
                    <TOOL>_CLAUDE_SETTINGS, <TOOL>_CLAUDE_PROJECTS, and <TOOL>_GIT, <TOOL>_GH for a tool
 """
 
@@ -51,10 +51,6 @@ def library(*parts):
 
 def config_file(environ=None):
     return Path(chosen("config", environ) or library("Application Support", TOOL, "config.toml"))
-
-
-def state_root(environ=None):
-    return Path(chosen("state_dir", environ) or library("Application Support", TOOL))
 
 
 def log_root(environ=None):

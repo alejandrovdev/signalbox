@@ -213,6 +213,8 @@ class Sweep:
             if tree.branch is None or tree.prunable:
                 continue
             held.add(tree.branch)
+            if not os.path.isdir(tree.path):
+                continue  # a locked worktree whose folder is gone: git keeps it, and its branch
             tip = merged.get(tree.branch)
             if tip is None or (tip in chain and tree.branch not in through_lane):
                 continue

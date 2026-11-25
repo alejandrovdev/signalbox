@@ -133,6 +133,13 @@ class Board(repos.Scratch):
             lock.chmod(0o600)
         self.assertEqual(report["mergeLane"]["lock"], "unknown" if os.getuid() else "free")
 
+    def test_leaves_out_a_locked_worktree_whose_folder_is_gone(self):
+        repo, a, _ = self.repo_with_worktrees()
+        self.git(repo, "worktree", "lock", str(a))
+        self.host.run(["rm", "-rf", str(a)])
+        report = json.loads(self.status(repo, as_json=True, github=False))
+        self.assertEqual([row["branch"] for row in report["worktrees"]], ["main", "b"])
+
     def test_prints_markdown_tables_without_json(self):
         _, a, _ = self.repo_with_worktrees()
         text = self.status(a, github=False)

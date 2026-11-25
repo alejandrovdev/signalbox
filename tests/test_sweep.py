@@ -60,6 +60,14 @@ class Sweep(repos.Scratch):
         self.assertNotIn("wt-done", self.git(repo, "worktree", "list", "--porcelain"))
         self.assertEqual(self.branches(repo), ["refs/heads/main", "refs/remotes/origin/main"])
 
+    def test_passes_over_a_locked_worktree_whose_folder_is_gone(self):
+        repo = self.base_repo()
+        gone = self.merged_worktree(repo, "wt-gone", "feat/gone")
+        self.git(repo, "worktree", "lock", str(gone))
+        self.host.run(["rm", "-rf", str(gone)])
+        done = self.merged_worktree(repo, "wt-done", "feat/done")
+        self.assertIn("sweep: removed worktree %s" % done, self.sweep(repo))
+
     def test_the_build_output_is_the_projects(self):
         repo = self.base_repo()
         self.write(repo / ".git/info/exclude", "node_modules/\n.cache/\n")

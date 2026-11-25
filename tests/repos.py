@@ -72,7 +72,6 @@ class Scratch(unittest.TestCase):
             "GIT_CONFIG_NOSYSTEM": "1",
             "LANG": "C",
             "SIGNALBOX_LOG_DIR": str(self.tmp / "logs"),
-            "SIGNALBOX_STATE_DIR": str(self.tmp / "state"),
             "SIGNALBOX_CACHE_DIR": str(self.tmp / "cache"),
             "SIGNALBOX_CONFIG": str(self.tmp / "state" / "config.toml"),
             "SIGNALBOX_CLAUDE_SETTINGS": str(self.home / ".claude" / "settings.json"),

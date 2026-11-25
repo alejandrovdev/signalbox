@@ -198,6 +198,11 @@ class Deinit(Linking):
         self.assertFalse(merge.exists())
         self.assertNotIn("merge.noindex", self.git(repo, "worktree", "list"))
 
+    def test_unlinks_a_project_whose_folder_is_gone(self):
+        self.link(self.tmp / "gone")
+        self.assertEqual(self.run_cli("deinit", str(self.tmp / "gone")), 0)
+        self.assertEqual(self.saved().projects, ())
+
     def test_a_folder_of_no_project_says_which_are_linked(self):
         self.link(self.base_repo("shop"))
         other = self.base_repo("other")
@@ -234,6 +239,12 @@ class Doctor(Linking):
         self.assertIn("problem  gh: not signed in: sign in with: gh auth login", text)
         self.assertIn("missing  Claude Code hooks: install them with: signalbox setup", text)
 
+    def test_a_tool_no_project_needs_does_not_fail_it(self):
+        self.environ["SIGNALBOX_GH"] = str(self.tmp / "no-gh")
+        self.link(self.base_repo("shop"), features=("board", "sweep"))
+        self.assertEqual(self.run_cli("doctor"), 0, "\n".join(self.printed))
+        self.assertIn("missing  gh: install it with: brew install gh (no project needs it)", "\n".join(self.printed))
+
     def test_with_no_project_says_how_to_link_one(self):
         hooks.install(self.settings, "signalbox")
         self.run_cli("doctor")
@@ -257,6 +268,19 @@ class Uninstall(Linking):
         self.assertEqual(self.run_cli("uninstall", "--purge"), 0)
         self.assertFalse(self.file.exists())
         self.assertFalse((self.tmp / "logs").exists())
+
+    def test_purge_refuses_while_a_lane_runs(self):
+        from signalbox.atoms import lock
+
+        repo = self.base_repo("shop")
+        self.link(repo)
+        held = lock.take(repo / ".git" / "signalbox-lane.lock")
+        try:
+            self.assertEqual(self.run_cli("uninstall", "--purge"), 1)
+        finally:
+            held.close()
+        self.assertEqual(self.printed[-1], 'A merge lane runs in "shop": run this again once it ends. Nothing was changed.')
+        self.assertTrue(self.file.exists())
 
 
 if __name__ == "__main__":

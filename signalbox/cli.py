@@ -212,7 +212,9 @@ def run_hook(context):
         return 0  # the person's own hooks run it: once is enough
     if event == "pre-tool-use":
         command = (data.get("tool_input") or {}).get("command") if isinstance(data.get("tool_input"), dict) else None
-        if data.get("tool_name") != "Bash" or not isinstance(command, str) or "merge" not in command:
+        if data.get("tool_name") != "Bash" or not isinstance(command, str):
+            return 0
+        if not any(word in command for word in ("gh", "curl", "wget")):
             return 0  # the usual case, decided before reading any file
     folder = data.get("cwd") if isinstance(data.get("cwd"), str) and data.get("cwd") else os.getcwd()
     if not os.path.isdir(folder):

@@ -37,13 +37,16 @@ from pathlib import Path
 from .. import names
 from .. import repository as repositories
 from ..atoms import git as git_atom
-from ..atoms import lock, logs
+from ..atoms import lock, logs, patterns
 from . import sweep as sweep_feature
 
 MAX_ATTEMPTS = 3
 VIEW_FIELDS = "number,state,isDraft,baseRefName,headRefName,headRefOid,isCrossRepository"
 STOP_SECONDS = 10  # what a stopped gate gets before SIGKILL
 NO_HOOKS = ("-c", "core.hooksPath=/dev/null")
+MARK = names.TOOL + "-merge-worktree"  # in the git folder of a merge worktree signalbox made
+RUNNER_FILES = {"make": ("Makefile", "makefile", "GNUmakefile")}
+PACKAGE_RUNNERS = ("npm", "pnpm", "yarn")
 IDENTITY = ("-c", "user.name=merge lane", "-c", "user.email=merge-lane@localhost", "-c", "commit.gpgsign=false")
 
 
@@ -200,20 +203,40 @@ class Run:
         gate = self.read_state().get("gate")
         if isinstance(gate, dict) and isinstance(gate.get("pid"), int) and isinstance(gate.get("started"), list):
             pid = gate["pid"]
-            dates = self.host.start_dates(pid)
-            if dates and set(dates) & set(gate["started"]):
+            # The gate runs as a process group named after its first process. While the group
+            # has a member, no new process gets that number: a group whose first process is
+            # gone is the gate's; one whose first process runs is the gate's when that process
+            # started when the gate did.
+            dates = self.host.start_dates(pid) if group_alive(pid) else None
+            if dates is not None and (not dates or set(dates) & set(gate["started"])):
                 stop_group(pid)
                 self.out("lane: stopped the gate a stopped run left running (pid %d)." % pid)
         self.write_state({})
 
     # the merge worktree and the gate
 
+    def not_ours(self):
+        self.record["status"] = "error"
+        self.err("lane: %s is not a merge worktree signalbox made: set merge_worktree to a folder of its own." % self.worktree)
+        raise Stop(1)
+
+    def own_git_dir(self):
+        """The merge worktree's git folder when signalbox made it for this repository, else None."""
+        found = self.host.run([self.repository.git.path, "-C", str(self.worktree), "rev-parse", "--absolute-git-dir"])
+        if found.returncode != 0:
+            return None
+        folder = Path(found.stdout.strip())
+        mine = os.path.realpath(folder.parent) == os.path.realpath(Path(self.repository.common_dir) / "worktrees")
+        return folder if mine and (folder / MARK).exists() else None
+
     def prepare_worktree(self, tip):
         path = self.worktree
         if (path / ".git").exists():
-            found = self.host.run([self.repository.git.path, "-C", str(path), "rev-parse", "--absolute-git-dir"])
-            stale = Path(found.stdout.strip()) / "index.lock" if found.returncode == 0 else None
-            if stale is not None and stale.exists():
+            git_dir = self.own_git_dir()
+            if git_dir is None:
+                self.not_ours()  # a checkout or a session's worktree: never reset, never cleaned
+            stale = git_dir / "index.lock"
+            if stale.exists():
                 self.out("lane: the merge worktree held a stale index.lock (a killed git left it); made it again.")
                 stale.unlink(missing_ok=True)
                 removed = self.host.run([self.repository.git.path, "-C", str(self.top), "worktree", "remove", "--force", "--force", str(path)])
@@ -221,25 +244,56 @@ class Run:
                     shutil.rmtree(path, ignore_errors=True)
         if not (path / ".git").exists():
             if path.exists() and any(path.iterdir()):
-                self.record["status"] = "error"
-                self.err("lane: %s is a folder that is not the merge worktree: move it away, or set merge_worktree." % path)
-                raise Stop(1)
+                self.not_ours()
             self.git("worktree", "prune")
             path.parent.mkdir(parents=True, exist_ok=True)
             self.git("worktree", "add", "--quiet", "--detach", str(path), tip)
+            git_dir = Path(self.repository.git.line(path, "rev-parse", "--absolute-git-dir"))
+            (git_dir / MARK).write_text("The merge worktree of signalbox's lane.\n", encoding="utf8")
         self.lane_git("reset", "--quiet", "--hard")
         self.lane_git("checkout", "--quiet", "--detach", tip)
         self.lane_git("clean", "-d", "--force", "--quiet")
 
+    def file_at(self, commit, path):
+        done = self.host.run([self.repository.git.path, "-C", str(self.top), "show", "%s:%s" % (commit, path)])
+        return done.stdout if done.returncode == 0 else None
+
+    def package_script(self, commit, name):
+        try:
+            scripts = json.loads(self.file_at(commit, "package.json") or "{}").get("scripts") or {}
+        except (ValueError, AttributeError):
+            return None
+        return scripts.get(name) if isinstance(scripts, dict) else None
+
     def gate_files(self, base_tip, head):
-        """The files the gate command names that the pull request changes."""
+        """What of the gate the pull request changes: the files its command names, the
+        Makefile of a `make` gate, the package.json script of an npm, pnpm or yarn gate (and
+        the files that script names), and the project's `gate_files`."""
         try:
             words = shlex.split(self.project.gate or "")
         except ValueError:
-            return []
-        named = {word[2:] if word.startswith("./") else word for word in words if word and not word.startswith(("-", "/"))}
-        changed = git_atom.paths(self.git("diff", "--name-only", "-z", "%s...%s" % (base_tip, head)).stdout)
-        return sorted(named & set(changed))
+            words = []
+        changed = set(git_atom.paths(self.git("diff", "--name-only", "-z", "%s...%s" % (base_tip, head)).stdout))
+
+        def files(named):
+            return {word[2:] if word.startswith("./") else word for word in named if word and not word.startswith(("-", "/"))} & changed
+
+        found = files(words)
+        runner = os.path.basename(words[0]) if words else ""
+        found |= set(RUNNER_FILES.get(runner, ())) & changed
+        if runner in PACKAGE_RUNNERS and "package.json" in changed:
+            rest = [word for word in words[1:] if not word.startswith("-")]
+            name = rest[1] if rest[:1] in (["run"], ["run-script"]) and len(rest) > 1 else (rest[0] if rest else None)
+            if name:
+                before, after = self.package_script(base_tip, name), self.package_script(head, name)
+                if before != after:
+                    found.add("package.json scripts.%s" % name)
+                try:
+                    found |= files(shlex.split(after or ""))
+                except ValueError:
+                    pass
+        found |= {path for path in changed if patterns.any_match(path, self.project.gate_files)}
+        return sorted(found)
 
     def run_gate(self, attempt):
         """Run the gate in the merge worktree; (exit code, its whole output)."""

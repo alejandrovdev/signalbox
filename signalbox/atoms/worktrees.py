@@ -10,6 +10,7 @@ one worktree stands against the base.
     default_branch(git, top, remote)      the branch the remote's HEAD names, or None
 """
 
+import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -85,8 +86,8 @@ def listed(git, top):
 
 
 def on_branches(git, top):
-    """The worktrees on a branch whose folder exists."""
-    return [tree for tree in listed(git, top) if tree.branch is not None and not tree.prunable]
+    """The worktrees on a branch whose folder exists (a locked one may have lost its folder)."""
+    return [tree for tree in listed(git, top) if tree.branch is not None and not tree.prunable and os.path.isdir(tree.path)]
 
 
 def conflicts(git, folder, base, ref):

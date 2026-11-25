@@ -65,6 +65,20 @@ class Install(repos.Scratch):
         self.assertEqual(hooks.remove(self.settings), [])
         self.assertEqual(hooks.installed(self.settings), [])
 
+    def test_a_linked_settings_file_stays_a_link_and_keeps_its_mode(self):
+        real = self.tmp / "dotfiles" / "settings.json"
+        self.write(real, json.dumps({"model": "opus"}))
+        real.chmod(0o600)
+        self.settings.parent.mkdir(parents=True)
+        self.settings.symlink_to(real)
+        hooks.install(self.settings, "signalbox")
+        self.assertTrue(self.settings.is_symlink())
+        self.assertEqual(hooks.installed(real), list(hooks.EVENTS))
+        self.assertEqual(real.stat().st_mode & 0o777, 0o600)
+        hooks.remove(self.settings)
+        self.assertTrue(self.settings.is_symlink())
+        self.assertEqual(json.loads(real.read_text()), {"model": "opus"})
+
     def test_a_file_that_is_not_json_is_left_alone(self):
         self.write(self.settings, "{ not json")
         with self.assertRaises(hooks.SettingsError):
@@ -118,6 +132,12 @@ class Hook(repos.Scratch):
         self.assertEqual(self.hook("pre-tool-use", self.bash("gh pr merge 104", cwd=other)), 0)
         self.assertEqual(self.hook("pre-tool-use", self.bash("gh pr merge 104", cwd=self.tmp)), 0)
         self.assertEqual(self.errors, [])
+
+    def test_the_guard_reads_a_merge_written_in_pieces(self):
+        self.link()
+        for command in ("gh pr mer''ge 104", "gh pr m\\erge 104", "gh api -X PUT repos/o/r/pulls/104/mer''ge"):
+            with self.subTest(command=command):
+                self.assertEqual(self.hook("pre-tool-use", self.bash(command)), 2)
 
     def test_fails_open_on_input_it_cannot_read(self):
         self.link()

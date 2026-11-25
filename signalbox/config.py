@@ -111,6 +111,7 @@ PROJECT_KEYS = (
     "merge_method",
     "merge_worktree",
     "legacy_locks",
+    "gate_files",
 )
 DEFAULTS_KEYS = ("preset", "features")
 
@@ -137,6 +138,7 @@ class Project:
     merge_method: str = MERGE_METHODS[0]
     merge_worktree: Optional[str] = None  # None: the default place
     legacy_locks: tuple = ()  # other tools' lane locks, from the git common directory
+    gate_files: tuple = ()  # patterns of files a change to which changes the gate
 
     @property
     def directory(self):
@@ -311,6 +313,7 @@ def project_from(name, table, problems):
         )
     worktree = text_value(key, table, "merge_worktree", problems)
     legacy = text_list(key, table, "legacy_locks", problems)
+    gate_files = text_list(key, table, "gate_files", problems)
     for other in table:
         if other not in PROJECT_KEYS:
             problems.append(("%s.%s" % (key, other), "unknown key"))
@@ -329,6 +332,7 @@ def project_from(name, table, problems):
         method,
         worktree,
         legacy or (),
+        gate_files or (),
     )
 
 
@@ -413,6 +417,8 @@ def project_lines(project):
         lines.append("merge_worktree = %s" % quoted(project.merge_worktree))
     if project.legacy_locks:
         lines.append("legacy_locks = %s" % listed(project.legacy_locks))
+    if project.gate_files:
+        lines.append("gate_files = %s" % listed(project.gate_files))
     return lines
 
 

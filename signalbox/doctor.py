@@ -12,7 +12,7 @@ reading each repository.
 import re
 from dataclasses import dataclass
 
-from . import hooks, names
+from . import config, hooks, names
 from . import repository as repositories
 from .atoms import worktrees
 
@@ -72,8 +72,23 @@ def hooks_check(settings):
     return Check(MISSING, "Claude Code hooks", "install them with: %s" % names.command("setup"))
 
 
+def named_prerequisites(host, settings):
+    """(what it is, its check): git, gh, claude and the hooks."""
+    return [("git", git_check(host)), ("gh", gh_check(host)), ("claude", claude_check(host)), ("hooks", hooks_check(settings))]
+
+
 def prerequisites(host, settings):
-    return [git_check(host), gh_check(host), claude_check(host), hooks_check(settings)]
+    return [check for _, check in named_prerequisites(host, settings)]
+
+
+def needed(configuration):
+    """What the linked projects need of the prerequisites: their tools, and the hooks when
+    one has a feature that runs in Claude Code."""
+    features = {feature for project in configuration.projects for feature in project.features}
+    wanted = set(config.tools(config.ordered(features)))
+    if "claude" in wanted:
+        wanted.add("hooks")
+    return wanted
 
 
 def checks(project, host):
@@ -107,8 +122,12 @@ def checks(project, host):
 
 def report(configuration, host, settings, out):
     failed = False
+    wanted = needed(configuration)
     out("Prerequisites")
-    for check in prerequisites(host, settings):
+    for name, check in named_prerequisites(host, settings):
+        if check.failed and name not in wanted:
+            out("  " + check.line() + " (no project needs it)")
+            continue
         out("  " + check.line())
         failed = failed or check.failed
     if not configuration.projects:

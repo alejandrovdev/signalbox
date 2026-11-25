@@ -230,7 +230,10 @@ def deinit(chosen, context):
     out, host = context.out, context.host
     folder = Path(os.path.expanduser(chosen.folder)) if chosen.folder else context.folder
     configuration = context.configuration()
-    project, _ = linked.project_for(configuration, folder, host.git) if folder.is_dir() else (None, None)
+    if folder.is_dir():
+        project, _ = linked.project_for(configuration, folder, host.git)
+    else:  # a folder that is gone: by the path the configuration names
+        project = next((one for one in configuration.projects if config.folder_key(one.path) == config.folder_key(str(folder))), None)
     if project is None:
         listed = ", ".join("%s (%s)" % (other.name, other.path) for other in configuration.projects)
         out("No project is linked to %s. %s" % (folder, "The linked projects: " + listed if listed else names.no_project()))
@@ -247,9 +250,26 @@ def deinit(chosen, context):
     return 0
 
 
+def lane_running(project, host):
+    """Whether a merge lane holds the project's lock now."""
+    if not project.directory.is_dir():
+        return False
+    where = worktrees.locate(host.git, project.directory)
+    return where is not None and lock.probe(Path(where.common_dir) / names.LANE_LOCK) == lock.BUSY
+
+
 def uninstall(chosen, context):
     out, host = context.out, context.host
     settings = names.claude_settings(host.environ)
+    if chosen.purge:
+        try:
+            configuration = context.configuration()
+        except config.ConfigError:
+            configuration = config.Config()
+        busy = next((project for project in configuration.projects if lane_running(project, host)), None)
+        if busy is not None:
+            out('A merge lane runs in "%s": run this again once it ends. %s' % (busy.name, NOTHING))
+            return 1
     try:
         removed = hooks.remove(settings)
     except hooks.SettingsError as error:
@@ -261,10 +281,6 @@ def uninstall(chosen, context):
         out("Left as they are: the configuration %s, the logs in %s and the merge worktrees in %s. Remove them with: %s"
             % (places[0], places[1], places[2], names.command("uninstall", "--purge")))
         return 0
-    try:
-        configuration = context.configuration()
-    except config.ConfigError:
-        configuration = config.Config()
     for project in configuration.projects:
         remove_merge_worktree(project, host, out)
     for folder in places[1:]:

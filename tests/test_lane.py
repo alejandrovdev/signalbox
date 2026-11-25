@@ -1,5 +1,6 @@
 """Tests of the merge lane against a made-up GitHub (see tests/lanes.py)."""
 
+import json
 import os
 import re
 import signal
@@ -435,6 +436,58 @@ class MergeLane(lanes.Lane):
         self.assertFalse((self.lane_worktree / "node_modules").exists())
         self.assertEqual(self.records()[-1]["status"], "merged")
 
+    def test_refuses_a_merge_worktree_that_is_not_its_own(self):
+        self.open_pr(104, "feat/a")
+        before = self.caller_state()
+        detached = self.tmp / "detached"
+        self.git(self.checkout, "worktree", "add", "--quiet", "--detach", str(detached))
+        self.write(detached / "notes.txt", "a session's work")
+        for place in (self.checkout, detached):
+            with self.subTest(place=place):
+                code, _, stderr = self.lane(104, self.project(merge_worktree=str(place)), dry_run=True)
+                self.assertEqual(code, 1)
+                self.assertIn("lane: %s is not a merge worktree signalbox made: set merge_worktree to a folder of its own." % place, stderr)
+        self.assertEqual(self.caller_state(), before)
+        self.assertEqual((detached / "notes.txt").read_text(), "a session's work")
+        self.assertEqual(self.gate_calls(), [])
+
+    def test_refuses_a_pull_request_that_changes_the_gates_makefile_target_or_package_script(self):
+        self.push_commit("main", "Makefile", "check:\n\tsh scripts/check.sh")
+        self.push_commit("main", "package.json", '{"scripts": {"verify": "sh scripts/check.sh", "dev": "x"}}')
+        self.git(self.checkout, "fetch", "--quiet", "origin")
+        makefile = self.push_commit("feat/make", "Makefile", "\t@echo skipped every check", "main")
+        self.describe(104, "feat/make", makefile)
+        code, _, stderr = self.lane(104, self.project(gate="make check"))
+        self.assertEqual(code, 1)
+        self.assertIn("it changes the gate (Makefile)", stderr)
+
+        script = self.git(self.origin, "show", "main:package.json").replace('"verify": "sh scripts/check.sh"', '"verify": "true"')
+        self.write(self.seed / "package.json", script)
+        self.git(self.seed, "checkout", "-q", "-B", "feat/script", "origin/main")
+        self.write(self.seed / "package.json", script)
+        self.git(self.seed, "commit", "-qam", "skip the checks")
+        self.git(self.seed, "push", "-q", "origin", "feat/script")
+        self.describe(105, "feat/script", self.origin_rev("refs/heads/feat/script"))
+        code, _, stderr = self.lane(105, self.project(gate="pnpm verify"))
+        self.assertEqual(code, 1)
+        self.assertIn("it changes the gate (package.json scripts.verify)", stderr)
+
+        other = self.git(self.origin, "show", "main:package.json").replace('"dev": "x"', '"dev": "y"')
+        self.git(self.seed, "checkout", "-q", "-B", "feat/dev", "origin/main")
+        self.write(self.seed / "package.json", other)
+        self.git(self.seed, "commit", "-qam", "another script")
+        self.git(self.seed, "push", "-q", "origin", "feat/dev")
+        self.describe(106, "feat/dev", self.origin_rev("refs/heads/feat/dev"))
+        code, _, stderr = self.lane(106, self.project(gate="pnpm verify"), dry_run=True)
+        self.assertNotIn("changes the gate", stderr, "another script of package.json is no gate change")
+
+    def test_the_projects_gate_files_count_as_the_gate(self):
+        head = self.push_commit("feat/conf", "checks.toml", "strict = false", "main")
+        self.describe(104, "feat/conf", head)
+        code, _, stderr = self.lane(104, self.project(gate_files=("checks.toml",)))
+        self.assertEqual(code, 1)
+        self.assertIn("it changes the gate (checks.toml)", stderr)
+
     def test_makes_the_merge_worktree_again_when_its_folder_is_gone(self):
         self.open_pr(104, "feat/a")
         self.lane(104, dry_run=True)
@@ -515,6 +568,27 @@ class MergeLaneProcesses(lanes.Lane):
         self.assertEqual(again.returncode, 0, stderr)
         self.assertRegex(stdout, r"^lane: stopped the gate a stopped run left running \(pid \d+\)\.\n")
         self.wait_for(lambda: not lanes.alive(gate), "the gate to stop", seconds=15)
+
+    def test_the_next_run_stops_what_a_gate_started_after_its_first_process_ended(self):
+        self.open_pr(104, "feat/a")
+        child_file = self.control / "child-pid"
+        self.on_event("during-gate", 'sleep 317 &\necho $! > "%s"\nwhile true; do echo tick; sleep 0.1; done' % child_file)
+        running = self.command("merge", "104")
+        self.wait_for(lambda: child_file.exists() and child_file.read_text().strip(), "the gate's child")
+        child = int(child_file.read_text())
+        leader = json.loads((self.checkout / ".git" / names.LANE_STATE).read_text())["gate"]["pid"]
+        running.send_signal(signal.SIGKILL)
+        running.communicate(timeout=60)
+        self.wait_for(lambda: not lanes.alive(leader), "the gate's first process to end on its closed output")
+        self.assertTrue(lanes.alive(child), "SIGKILL leaves the gate's child running")
+
+        (self.control / "during-gate").unlink(missing_ok=True)
+        again = self.command("merge", "104")
+        stdout, stderr = again.communicate(timeout=120)
+
+        self.assertEqual(again.returncode, 0, stderr)
+        self.assertIn("lane: stopped the gate a stopped run left running", stdout)
+        self.wait_for(lambda: not lanes.alive(child), "the gate's child to stop", seconds=15)
 
     def test_waits_for_a_legacy_lock_while_another_tool_holds_it(self):
         self.open_pr(104, "feat/a")
