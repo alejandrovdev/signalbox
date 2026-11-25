@@ -29,6 +29,7 @@ RECORD_KEYS = [
     "mergeCommit",
     "failedStep",
     "gateLog",
+    "group",
 ]
 
 
@@ -79,6 +80,7 @@ class MergeLane(lanes.Lane):
             "mergeCommit": merge_commit,
             "failedStep": None,
             "gateLog": None,
+            "group": None,
         }.items():
             self.assertEqual(record[key], value, key)
         self.assertRegex(record["startedAt"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
@@ -199,6 +201,7 @@ class MergeLane(lanes.Lane):
                         "mergeCommit": None,
                         "failedStep": None,
                         "gateLog": None,
+                        "group": None,
                     },
                 )
 

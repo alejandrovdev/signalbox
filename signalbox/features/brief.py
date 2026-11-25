@@ -1,8 +1,11 @@
 """The session brief: what a session is told about the other worktrees. Git only, no fetch.
 
-    brief(repository, host, out)     at session start: this worktree's line, the other
-                                     worktrees that change files, and how to merge; at most
-                                     2,000 characters
+    brief(repository, host, out, configuration)
+                                     at session start: this worktree's line, the other
+                                     worktrees that change files, how to merge and, when the
+                                     project is in a group, the worktrees of the group's other
+                                     repositories that change files; at most 2,000
+                                     characters, the group's lines cut first
     changes(repository, host, out)   before each prompt: only what is new since the previous
                                      run in this worktree (a new conflict with the base, a
                                      file newly shared with another branch); the first run
@@ -15,6 +18,7 @@ import json
 import os
 
 from .. import names
+from .. import repository as repositories
 from ..atoms import worktrees
 from .board import feature_documents
 
@@ -58,7 +62,38 @@ def merge_line(project):
     )
 
 
-def brief(repository, host, out):
+def group_entries(project, configuration, host):
+    """The lines of the group's other repositories: one per worktree that changes files,
+    measured against that project's own base. A repository that cannot be read is left out."""
+    group = configuration.group_of(project.name) if configuration is not None else None
+    if group is None:
+        return None, []
+    entries = []
+    for name in group.projects:
+        other = configuration.project(name)
+        if name == project.name or other is None:
+            continue
+        try:
+            opened = repositories.open(other, host, other.directory) if other.directory.is_dir() else None
+            found = worktrees.all_facts(opened.git, opened.top, opened.tip, conflict=False) if opened else []
+        except Exception:
+            continue
+        for one in found:
+            if not one.files:
+                continue
+            parts = ["- %s: %s" % (name, one.branch)]
+            documents = feature_documents(one.files, other.feature_docs)
+            if documents:
+                parts.append("features: %s" % ", ".join(documents))
+            entries.append("; ".join(parts))
+    return group, entries
+
+
+def more(entries, shown):
+    return ["- +%d more worktrees" % (len(entries) - shown)] if shown < len(entries) else []
+
+
+def brief(repository, host, out, configuration=None):
     project = repository.project
     mine, others = this_and_others(repository, conflict=True)
     base = repository.remote_base
@@ -80,19 +115,23 @@ def brief(repository, host, out):
             parts.append("shares: %s" % named(shares, BRIEF_FILES))
         entries.append("; ".join(parts))
     footer = [line for line in (merge_line(project),) if line]
+    group, theirs = group_entries(project, configuration, host)
 
-    def compose(shown):
-        body = entries[:shown]
-        if shown < len(entries):
-            body.append("- +%d more worktrees" % (len(entries) - shown))
+    def compose(shown, shown_theirs):
         header = ["Other worktrees that change files:"] if entries else []
-        return "\n".join([own] + header + body + footer)
+        lines = [own] + header + entries[:shown] + more(entries, shown) + footer
+        if theirs:
+            lines += ["Other repositories of %s:" % group.name] + theirs[:shown_theirs] + more(theirs, shown_theirs)
+        return "\n".join(lines)
 
-    shown = len(entries)
-    text = compose(shown)
+    shown, shown_theirs = len(entries), len(theirs)
+    text = compose(shown, shown_theirs)
+    while len(text) + 1 > BRIEF_LIMIT and shown_theirs > 0:  # the group's lines go first
+        shown_theirs -= 1
+        text = compose(shown, shown_theirs)
     while len(text) + 1 > BRIEF_LIMIT and shown > 0:
         shown -= 1
-        text = compose(shown)
+        text = compose(shown, shown_theirs)
     out(text[: BRIEF_LIMIT - 1])
 
 

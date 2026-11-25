@@ -42,6 +42,11 @@ def with_project(configuration, answers, folder, existing=None, base=None):
             existing, name=answers[NAME], features=features, gate=gate, base=existing.base if base is None else base
         )
         projects = tuple(project if other is existing else other for other in configuration.projects)
+        groups = tuple(
+            dataclasses.replace(group, projects=tuple(project.name if name == existing.name else name for name in group.projects))
+            for group in configuration.groups
+        )
+        configuration = dataclasses.replace(configuration, groups=groups)
     else:
         project = config.Project(answers[NAME], str(folder), features, base, gate)
         projects = configuration.projects + (project,)
@@ -49,7 +54,21 @@ def with_project(configuration, answers, folder, existing=None, base=None):
 
 
 def without(configuration, project):
-    return dataclasses.replace(configuration, projects=tuple(other for other in configuration.projects if other != project))
+    """(the configuration without the project, what that did to its group, as lines). The
+    project leaves its group; a group left with fewer than two projects goes."""
+    groups, said = [], []
+    for group in configuration.groups:
+        if project.name not in group.projects:
+            groups.append(group)
+            continue
+        kept = tuple(name for name in group.projects if name != project.name)
+        if len(kept) < 2:
+            said.append('Removed the group "%s": only "%s" was left in it.' % (group.name, '", "'.join(kept)))
+            continue
+        groups.append(dataclasses.replace(group, projects=kept))
+        said.append('Removed "%s" from the group "%s", which keeps: %s.' % (project.name, group.name, ", ".join(kept)))
+    projects = tuple(other for other in configuration.projects if other != project)
+    return dataclasses.replace(configuration, projects=projects, groups=tuple(groups)), said
 
 
 def name_problem(name, configuration, existing=None):

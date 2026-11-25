@@ -2,15 +2,16 @@
 
 Lanes for parallel Claude Code sessions that work in git worktrees of one repository.
 
-> **Status: in development.** The repository and its Homebrew tap are private until
-> publication: `brew install` works only for a GitHub account with access to both. Commands
-> and files may still change before the first public release.
+> **Status: 1.0.0, private.** The repository and its Homebrew tap are private until
+> publication: `brew install` works only for a GitHub account with access to both. See the
+> [changelog](CHANGELOG.md).
 
 Contents: [What it does](#what-it-does) · [Requirements](#requirements) ·
 [Install](#install) · [Quick start](#quick-start) ·
 [Setting up and linking](#setting-up-and-linking) ·
 [Features and presets](#features-and-presets) · [Configuration](#configuration) ·
-[Commands](#commands) · [The merge lane](#the-merge-lane) · [The sweep](#the-sweep) ·
+[Commands](#commands) · [The merge lane](#the-merge-lane) ·
+[Repositories that depend on each other](#repositories-that-depend-on-each-other) · [The sweep](#the-sweep) ·
 [The session brief and the hooks](#the-session-brief-and-the-hooks) ·
 [The merge guard](#the-merge-guard) · [Flow metrics](#flow-metrics) ·
 [Files it writes](#files-it-writes) · [Troubleshooting](#troubleshooting) ·
@@ -35,6 +36,8 @@ and lets one through at a time. signalbox does the same for the sessions of a re
 - **Merge guard**: sessions that try a direct `gh pr merge` are told to use the lane.
 - **Sweep**: clean worktrees whose branch was merged, and merged local branches, go away.
 - **Flow metrics**: lead time, lane waits and failures, merges outside the lane.
+- **Groups**: repositories that depend on each other share the brief and the board, and
+  their pull requests merge in dependency order.
 
 It installs once with Homebrew, is set up once from a terminal interface, and links any
 number of repositories, each with only the features it needs. It is for one person (or a
@@ -236,6 +239,8 @@ Unlinks the project of a folder (its main checkout or any worktree):
 - removes the merge worktree signalbox made for it, unless a lane runs in it at that moment;
   a merge worktree you placed with `merge_worktree` is left, with the command that removes
   it;
+- with `--shared-hooks`, removes the hooks `init --shared-hooks` wrote in the repository's
+  `.claude/settings.json` (commit that file); without it, says that they stay;
 - leaves as they are, and says so: its logs, the lane's lock and state and each worktree's
   `signalbox-changes.json` in the repository's git folder, and the Claude Code hooks, which
   do nothing in a repository no project links.
@@ -351,6 +356,21 @@ crosses folders. A pattern with no slash matches a name anywhere (`node_modules`
 `*.tsbuildinfo`); one with a slash matches the path from the worktree's top
 (`docs/features/*.md`).
 
+### `[groups.<name>]`
+
+Repositories that depend on each other (an API and the apps that call it, say) form a group:
+
+```toml
+[groups.platform]
+projects = ["api", "web", "mobile"]
+```
+
+`projects` names linked projects in dependency order: a project merges after those before it.
+A group's name follows the project-name rule; a group names at least two projects, and a
+project is in one group at most. `init` renames a project inside its group too; `deinit`
+takes it out of its group and removes a group left with fewer than two, and says so. See
+[Repositories that depend on each other](#repositories-that-depend-on-each-other).
+
 ### After you edit the file
 
 Every command, and every hook, reads the file each time it runs: there is nothing to reload
@@ -384,15 +404,15 @@ signalbox: ~/notes is in no linked project. Link its repository with: signalbox 
 | `setup` | `--preset <name>` or `--feature <feature>` (repeated), `--no-hooks`, `--yes` | Set up once: check the prerequisites, choose the defaults, install the Claude Code hooks. |
 | `init [folder]` | `--name <name>`, `--gate <command>`, `--base <branch>`, `--shared-hooks`, `--preset <name>` or `--feature <feature>` (repeated), `--yes` | Link a repository's folder, or replace the settings of one linked already. |
 | `deinit [folder]` | | Unlink a repository's folder. |
-| `status` | `--json`, `--no-github` | Show the board. `--no-github` leaves out the open pull requests (no `gh`). |
+| `status` | `--json`, `--no-github`, `--group` | Show the board. `--no-github` leaves out the open pull requests (no `gh`); `--group` shows the board of every project of this project's group, in order. |
 | `brief` | | Print what the session-start hook tells a session. |
 | `changes` | | Print what changed in the other worktrees since the last run in this worktree. |
 | `sweep` | `--dry-run`, `--json`, `--background` | Remove merged, clean worktrees and merged local branches. `--dry-run` says what it would do and changes nothing; `--background` starts it detached, prints nothing and exits 0, passing the other flags on. |
-| `merge <pr>` | `--dry-run`, `--allow-gate-change` | Merge a pull request through the lane. `--dry-run` merges and runs the gate in the merge worktree, then stops; `--allow-gate-change` runs a pull request that changes the gate's own files. |
+| `merge <pr> [<project>#<pr> ...]` | `--dry-run`, `--allow-gate-change` | Merge a pull request through the lane; with `<project>#<pr>`, several pull requests of one group, in the group's order. `--dry-run` merges and runs the gate in the merge worktree, then stops; `--allow-gate-change` runs a pull request that changes the gate's own files. |
 | `metrics` | `--since <YYYY-MM-DD>`, `--until <YYYY-MM-DD>`, `--json`, `--no-github` | Print flow metrics. `--since`: the first local day (default: 14 days ago); `--until`: the local day the window ends at, excluded (default: now). |
 | `doctor` | | Check what signalbox and each project need on this Mac. |
 | `hook <event>` | `--shared` | What Claude Code's hooks run: `session-start`, `user-prompt-submit` or `pre-tool-use`, with the hook's JSON on standard input. |
-| `uninstall` | `--purge` | Remove the Claude Code hooks; with `--purge`, also the configuration, the logs and the merge worktrees. |
+| `uninstall` | `--purge` | Remove the Claude Code hooks; with `--purge`, also the configuration, the logs, the merge worktrees and the sessions' records. |
 
 You do not need to type `hook`: Claude Code runs it.
 
@@ -530,6 +550,7 @@ runs and the metrics read them all.
 | `mergeCommit` | the commit GitHub wrote to the base |
 | `failedStep` | the step `gate_failed_step` found, or `null` |
 | `gateLog` | the file with a failed gate's whole output, or `null` |
+| `group` | the group of a [group merge](#repositories-that-depend-on-each-other), or `null` |
 
 | Status | Meaning | Exit code |
 | --- | --- | --- |
@@ -544,6 +565,49 @@ runs and the metrics read them all.
 | `tree_mismatch` | merged, but the base's tree is not the checked one: look at the base now | 1 |
 | `interrupted` | stopped by Ctrl-C or `SIGTERM` | 130 or 143 |
 | `error` | git or the fetch failed, the head left its branch, or the merge worktree's folder holds something else | 1 |
+
+## Repositories that depend on each other
+
+One change often spans several repositories: a field the API adds and the app shows. Link
+each repository as its own project (each with its base and gate), then name them in a
+[`[groups.<name>]`](#groupsname) table, in dependency order. The group adds three things.
+
+**The brief reaches across the group.** After this repository's lines, a session also reads
+`Other repositories of <group>:` and one line per worktree of the other repositories that
+changes files (`- api: add-coupons; features: coupons`), each measured against its own
+project's base, git only. A repository of the group that cannot be read is left out. Within
+the brief's 2,000 characters this repository's lines come first: the group's are cut first.
+
+**One board for the group.** `signalbox status --group` prints the board of every project of
+the group, in order (`--json`: `{"group": ..., "projects": [{"project": ..., ...}]}`; a
+project that cannot be read is named, and the exit code is 1).
+
+**A merge in order.** Name the pull requests of the change, a bare number for this folder's
+repository and `<project>#<number>` for the others:
+
+```sh
+signalbox merge 25 api#27
+```
+
+```text
+group: merging in order: api#27, web#25; what merges stays merged if a later one fails.
+...
+group: api#27 merged
+group: web#25 merged
+```
+
+Every pull request is read first: when any would be refused (closed, a draft, on another
+base, from a fork, unreadable, or changing its own gate without `--allow-gate-change`), each
+is named and nothing runs. Then the lanes run one after
+another in the group's order (not the command line's), each in its own repository with its
+own lock, gate and lane log (its record says `"group"`), and the run stops at the first that
+does not merge: the closing lines say `merged`, `not merged (<status>)` or `not tried`. The
+exit code is 0 only when all merged. `--dry-run` and `--allow-gate-change` apply to each.
+
+What it cannot do: merge atomically across repositories. What merged stays merged when a
+later pull request fails its gate; fix that one and run its merge again. A dry run checks
+each repository against its own base, which does not hold the earlier repositories' change.
+Put options before or after the pull requests, not between them.
 
 ## The sweep
 
@@ -569,7 +633,10 @@ worktree just cut from the base is reachable too, and stays.
 | --- | --- |
 | `the main checkout` | the repository's own folder is never removed |
 | `it holds the caller's directory; a sweep run from elsewhere removes it` | you (or the shell that ran the sweep) are inside it |
+| `a live Claude Code session stands in it (session <id>)` | a session that is still running last stood in it (see below) |
+| `cannot tell whether a recorded session still runs (ps failed)` | `ps` could not be read |
 | `uncommitted changes` | changed or untracked files (read with `--untracked-files=normal`, whatever your git settings say) |
+| `files git is told not to check (skip-worktree or assume-unchanged)` | files marked with `git update-index --skip-worktree` or `--assume-unchanged`, whose edits `git status` does not show |
 | `locked (<reason>)` | locked with `git worktree lock`. A Claude Code agent's lock (`claude agent <id> (pid <pid> start <date>)`) holds only while the agent runs: once no process with that pid and start date runs, or Claude Code's record says the agent finished in that very worktree, the lock is released and the worktree removed. |
 | `ignored files that are not build output (<path>)` | an ignored file that `build_output` does not list |
 | `used since its branch was merged` | its HEAD moved after the base received the branch: it was cut from a commit the base already held, or somebody checked out or committed in it since |
@@ -577,6 +644,14 @@ worktree just cut from the base is reachable too, and stays.
 | `a process runs in it (pid <n>)` | a process has its current directory inside it |
 | `cannot tell whether a process runs in it (lsof failed)` | `lsof` could not be read |
 | `git worktree remove failed: <git's message>` | git refused (the sweep never uses `--force`) |
+
+**Sessions.** Between two commands no process of a Claude Code session stands in its
+worktree, so `lsof` alone cannot tell that a session still works there (for example one that
+merged its own branch and goes on). The hooks record where each session stands: one small
+file per session in `~/Library/Application Support/signalbox/sessions/`, with its current
+directory and its `claude` process (found once per session, by its start date). While that
+process runs, the worktree it last stood in stays; an idle session keeps it until it ends. A
+sweep (not a dry run) removes the records of sessions that ended.
 
 **Branches.** A merged local branch is deleted only when no worktree holds it, it is not the
 base, it does not point at the base's tip (a branch just cut), and it is not the first branch
@@ -686,7 +761,12 @@ sections (`--json` gives the same as one object; a measure with nothing to measu
 `n/a` there and `null` in JSON):
 
 - **Window**: the start and end, in UTC.
-- **Merges**: the merge commits on the base's first-parent line in the window.
+- **Merges**: what landed on the base's first-parent line in the window, following the
+  project's `merge_method`: with `merge`, each merge commit; with `squash`, each commit GitHub
+  wrote (committer `noreply@github.com`) or the lane recorded; with `rebase`, each run of
+  consecutive commits GitHub wrote with one committer time (a rebased pull request), named by
+  its newest commit. A commit pushed straight to the base is never a merge; an edit made on
+  GitHub's website straight on the base is written by GitHub too, and counts as one.
   - `Total`, and a table of merges per day.
   - `Stale`: merges of a branch that did not hold the base's previous tip, so the result
     was never tested as such by the branch's own checks. `Stale share` is their part of the
@@ -701,8 +781,9 @@ sections (`--json` gives the same as one object; a measure with nothing to measu
   - `Outside the merge lane`: merge commits the lane did not make (merged on GitHub or from
     a terminal).
 
-  Squash and rebase merges write no merge commit, so this section counts only the merges
-  done with `merge_method = "merge"` (or merge commits made by hand).
+  With `squash` and `rebase`, `Stale` and `Stale with files changed on both sides` cannot be
+  measured (a landing keeps no second parent): the section says so, and the JSON has
+  `"method"` and `null` there. For a rebase run, `Documentation only` reads the whole run.
 - **Pull requests**: how many GitHub merged in the window (from the latest 500), and the
   minutes from open to merge: median, 90th percentile and maximum. This is the lead time.
   With `--no-github`, or without `gh`, it says it was not measured.
@@ -722,6 +803,7 @@ Mac's time zone, or the `TZ` variable.
 | Where | What |
 | --- | --- |
 | `~/Library/Application Support/signalbox/config.toml` | the configuration; the folder holds a `.signalbox` file that marks it as signalbox's |
+| `~/Library/Application Support/signalbox/sessions/<session id>.json` | where each Claude Code session stands, written by the hooks (see [the sweep](#the-sweep)) |
 | `~/Library/Logs/signalbox/<project>/lane.jsonl` | the lane log, one JSON line per run |
 | `~/Library/Logs/signalbox/<project>/gates/` | the whole output of each failed gate |
 | `~/Library/Caches/signalbox/<project>/merge.noindex` | the merge worktree (unless `merge_worktree` places it) |
@@ -859,7 +941,7 @@ fetched is not listed at all: fetch first.
 
    The configuration, the logs and the merge worktrees are kept, and it says where.
    `signalbox uninstall --purge` removes them too: the merge worktrees signalbox made, the
-   logs folder, the caches folder and the configuration file. It refuses, and changes
+   logs folder, the caches folder, the sessions' records and the configuration file. It refuses, and changes
    nothing, while a merge lane runs in a linked repository.
 
 3. Remove the command and the tap. Do this after `signalbox uninstall`: the hooks run the
@@ -872,7 +954,7 @@ fetched is not listed at all: fetch first.
 
 Left in place: the lane's lock and state and each worktree's `signalbox-changes.json` in
 each repository's git folder, the shared hooks a repository's `.claude/settings.json` holds
-(`init --shared-hooks`: remove them from that file), and a merge worktree placed with
+(`signalbox deinit --shared-hooks` removes them; commit that file), and a merge worktree placed with
 `merge_worktree` (`uninstall --purge` prints the command that removes it).
 
 ## Development
@@ -920,13 +1002,14 @@ never touches your own configuration, logs, caches or Claude Code settings:
 | `SIGNALBOX_CACHE_DIR` | `~/Library/Caches/signalbox`, where the merge worktrees go |
 | `SIGNALBOX_CLAUDE_SETTINGS` | `~/.claude/settings.json`, where the hooks go |
 | `SIGNALBOX_CLAUDE_PROJECTS` | `~/.claude/projects`, where the sweep reads Claude Code's agent records |
+| `SIGNALBOX_SESSIONS_DIR` | `~/Library/Application Support/signalbox/sessions`, where the hooks record each session |
 | `SIGNALBOX_GIT`, `SIGNALBOX_GH`, `SIGNALBOX_CLAUDE` | the program found in `PATH` or Homebrew's folders |
 
 ```sh
 scratch=$(mktemp -d)
 export SIGNALBOX_CONFIG="$scratch/config.toml" SIGNALBOX_LOG_DIR="$scratch/logs" \
   SIGNALBOX_CACHE_DIR="$scratch/cache" SIGNALBOX_CLAUDE_SETTINGS="$scratch/settings.json" \
-  SIGNALBOX_CLAUDE_PROJECTS="$scratch/projects"
+  SIGNALBOX_CLAUDE_PROJECTS="$scratch/projects" SIGNALBOX_SESSIONS_DIR="$scratch/sessions"
 python3 -m signalbox doctor
 ```
 

@@ -50,8 +50,8 @@ class CommandLine(repos.Scratch):
             with self.subTest(words=words):
                 self.assertEqual(self.run_cli("merge", *words), 2)
                 self.assertIn("usage: signalbox merge", self.usage)
-        self.assertEqual(self.run_cli("merge", "104", "105"), 2, "one pull request at a time")
-        self.assertIn("unrecognized arguments: 105", self.usage)
+        self.assertEqual(self.run_cli("merge", "104", "105"), 2, "one pull request of each project")
+        self.assertIn("'105' is not <project>#<pr>, such as api#12", self.usage)
         self.assertEqual(calls(), [])
 
     def test_metrics_in_a_linked_project_and_a_bad_date(self):
@@ -85,6 +85,70 @@ class CommandLine(repos.Scratch):
         self.link(repo)
         self.assertEqual(self.run_cli("status", "--json", "--no-github", folder=worktree), 0)
         self.assertEqual([row["branch"] for row in json.loads(self.printed[0])["worktrees"]], ["main", "a"])
+
+    def link_group(self, *others):
+        """shop (in `repo`, with a worktree `a`) and api (with a worktree `x` that changes a
+        file), in the group platform, api first; then any other projects, last."""
+        repo = self.base_repo()
+        self.add_worktree(repo, "wt-a", "a")
+        api = self.base_repo("api")
+        self.write(self.add_worktree(api, "api-x", "x") / "x.txt", "x")
+        shop = config.Project("shop", str(repo), tuple(config.FEATURES), gate="make check")
+        projects = (config.Project("api", str(api), ("board",)), shop) + others
+        group = config.Group("platform", tuple(project.name for project in projects))
+        config.save(config.Config(projects, groups=(group,)), self.environ["SIGNALBOX_CONFIG"])
+        return repo
+
+    def test_status_group_prints_the_board_of_each_project_of_the_group_in_its_order(self):
+        repo = self.link_group()
+        self.assertEqual(self.run_cli("status", "--no-github", folder=repo), 0)
+        own = self.printed[0]
+        self.assertEqual(self.run_cli("status", "--group", "--no-github", folder=repo), 0)
+        [text] = self.printed
+        self.assertTrue(text.startswith("# Board of api\n"), text)
+        self.assertIn("| x |", text)
+        self.assertTrue(text.endswith("\n\n" + own), text)
+
+    def test_status_group_as_json_and_with_the_pull_requests(self):
+        repo = self.link_group()
+        calls = self.stub_gh("[]")
+        self.assertEqual(self.run_cli("status", "--json", folder=repo), 0)
+        own = json.loads(self.printed[0])
+        self.assertEqual(self.run_cli("status", "--group", "--json", folder=repo), 0)
+        found = json.loads(self.printed[0])
+        self.assertEqual(list(found), ["group", "projects"])
+        self.assertEqual(found["group"], "platform")
+        api, shop = found["projects"]
+        self.assertEqual(shop, dict({"project": "shop"}, **own))
+        self.assertEqual(list(api)[:2], ["project", "base"])
+        self.assertEqual([(row["branch"], row["changedFiles"], row["pullRequest"]) for row in api["worktrees"]], [("main", 0, None), ("x", 1, None)])
+        self.assertNotIn("mergeLane", api, "api has no merge lane")
+        self.assertEqual(len(calls()), 3, "gh lists the pull requests of each repository")
+
+    def test_status_group_names_a_project_it_cannot_read_and_exits_1(self):
+        repo = self.link_group(config.Project("gone", str(self.tmp / "gone"), ("board",)))
+        self.assertEqual(self.run_cli("status", "--group", "--json", "--no-github", folder=repo), 1)
+        gone = json.loads(self.printed[0])["projects"][-1]
+        self.assertEqual(gone, {"project": "gone", "error": "not a git repository: %s" % (self.tmp / "gone")})
+        self.assertEqual(self.run_cli("status", "--group", "--no-github", folder=repo), 1)
+        self.assertTrue(self.printed[0].endswith("# Board of gone\n\nNot read: not a git repository: %s" % (self.tmp / "gone")))
+
+    def test_status_group_outside_a_group_says_how_to_make_one(self):
+        repo = self.base_repo()
+        self.link(repo)
+        self.assertEqual(self.run_cli("status", "--group", folder=repo), 1)
+        self.assertEqual(
+            self.errors,
+            [
+                'signalbox: The project "shop" is in no group. Make one in the configuration (%s): '
+                '[groups.<name>] with projects = ["shop", "<another project>"], in dependency order.' % self.environ["SIGNALBOX_CONFIG"]
+            ],
+        )
+
+    def test_brief_names_the_worktrees_of_the_other_repositories_of_its_group(self):
+        repo = self.link_group()
+        self.assertEqual(self.run_cli("brief", folder=repo), 0)
+        self.assertTrue(self.printed[0].endswith("\nOther repositories of platform:\n- api: x"), self.printed)
 
     def test_a_configuration_that_does_not_parse_is_reported_by_key(self):
         repo = self.base_repo()

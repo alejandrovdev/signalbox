@@ -33,6 +33,12 @@ class Linking(repos.Scratch):
     def saved(self):
         return config.load(self.file)
 
+    def group(self, name, *projects):
+        """Add a group of the linked projects to the saved configuration."""
+        saved = self.saved()
+        configuration = config.Config(saved.projects, saved.defaults, saved.groups + (config.Group(name, projects),))
+        config.save(configuration, self.file)
+
     def link(self, folder, name="shop", features=None, **values):
         values.setdefault("gate", "make check")
         project = config.Project(name, str(folder), tuple(config.FEATURES) if features is None else features, **values)
@@ -78,6 +84,7 @@ class Setup(Linking):
         self.run_cli("setup", keys=keys)
         body = "\n".join(keys.last("Prerequisites").body)
         self.assertIn("missing  gh: install it with: brew install gh", body)
+        self.assertIn("missing  Claude Code hooks: this setup installs them", body)
         self.assertRegex(body, r"ok       git \d+\.\d+")
 
 
@@ -139,6 +146,16 @@ class Init(Linking):
         [project] = self.saved().projects
         self.assertEqual((project.name, project.features, project.gate, project.base), ("web", ("board", "merge-lane"), "make test", "trunk"))
 
+    def test_renaming_a_project_renames_it_in_its_group(self):
+        self.link(self.base_repo("api"), name="api", features=("board",))
+        self.link(self.repo, features=("board",))
+        self.group("platform", "api", "shop")
+
+        self.assertEqual(self.run_cli("init", "--name", "store", "--yes", folder=self.repo), 0)
+
+        self.assertEqual(self.saved().groups, (config.Group("platform", ("api", "store")),))
+        self.assertIn('Renamed "shop" to "store".', self.printed)
+
     def test_a_feature_without_what_it_needs_is_a_usage_error(self):
         self.assertEqual(self.run_cli("init", "--feature", "merge-guard", "--yes", folder=self.repo), 2)
         self.assertIn('"merge-guard" needs "merge-lane"', self.usage)
@@ -188,6 +205,28 @@ class Deinit(Linking):
         self.assertEqual(self.printed[0], 'Unlinked "shop" (%s) from %s.' % (repo, self.file))
         self.assertTrue(any(line.startswith("Left as they are:") for line in self.printed))
 
+    def test_a_removed_project_leaves_its_group_and_says_so(self):
+        for name in ("api", "web", "shop"):
+            self.link(self.base_repo(name), name=name, features=("board",))
+        self.group("platform", "api", "shop", "web")
+
+        self.assertEqual(self.run_cli("deinit", folder=self.tmp / "shop"), 0)
+
+        self.assertEqual(self.saved().groups, (config.Group("platform", ("api", "web")),))
+        self.assertIn('Removed "shop" from the group "platform", which keeps: api, web.', self.printed)
+
+    def test_a_group_left_with_one_project_goes_and_says_so(self):
+        for name in ("api", "shop", "blog"):
+            self.link(self.base_repo(name), name=name, features=("board",))
+        self.group("platform", "api", "shop")
+
+        self.assertEqual(self.run_cli("deinit", folder=self.tmp / "shop"), 0)
+
+        self.assertEqual(self.saved().groups, ())
+        self.assertEqual([project.name for project in self.saved().projects], ["api", "blog"])
+        self.assertIn('Removed the group "platform": only "api" was left in it.', self.printed)
+        self.assertEqual(self.printed[0], 'Unlinked "shop" (%s) from %s.' % (self.tmp / "shop", self.file))
+
     def test_removes_the_merge_worktree_it_made(self):
         repo = self.base_repo("shop")
         self.link(repo)
@@ -202,6 +241,43 @@ class Deinit(Linking):
         self.link(self.tmp / "gone")
         self.assertEqual(self.run_cli("deinit", str(self.tmp / "gone")), 0)
         self.assertEqual(self.saved().projects, ())
+
+    def shared_hooks(self, repo):
+        """`init --shared-hooks`, with a hook of the team's own beside ours; the settings file."""
+        shared = repo / ".claude" / "settings.json"
+        mine = {"type": "command", "command": "echo mine"}
+        self.write(shared, json.dumps({"hooks": {"Stop": [{"hooks": [mine]}]}}))
+        self.assertEqual(self.run_cli("init", "--preset", "minimal", "--yes", "--shared-hooks", folder=repo), 0)
+        self.assertEqual(hooks.installed(shared), list(hooks.EVENTS))
+        return shared, {"hooks": {"Stop": [{"hooks": [mine]}]}}
+
+    def test_with_shared_hooks_removes_the_hooks_init_wrote_in_the_repository(self):
+        repo = self.base_repo("shop")
+        shared, theirs = self.shared_hooks(repo)
+        self.assertEqual(self.run_cli("deinit", "--shared-hooks", folder=repo), 0)
+        self.assertEqual(self.saved().projects, ())
+        self.assertIn("Removed the shared hooks from %s: commit that file." % shared, self.printed)
+        self.assertEqual(json.loads(shared.read_text()), theirs)
+
+    def test_without_the_flag_says_the_shared_hooks_stay_and_how_to_remove_them(self):
+        repo = self.base_repo("shop")
+        shared, _ = self.shared_hooks(repo)
+        self.assertEqual(self.run_cli("deinit", folder=repo), 0)
+        self.assertEqual(hooks.installed(shared), list(hooks.EVENTS))
+        self.assertIn("The shared hooks stay in %s: remove them with: signalbox deinit %s --shared-hooks" % (shared, repo), self.printed)
+        # The command it names works on the repository it just unlinked.
+        self.assertEqual(self.run_cli("deinit", str(repo), "--shared-hooks"), 0)
+        self.assertEqual(self.printed, ["Removed the shared hooks from %s: commit that file." % shared])
+        self.assertEqual(hooks.installed(shared), [])
+
+    def test_says_nothing_of_shared_hooks_a_repository_does_not_have(self):
+        repo = self.base_repo("shop")
+        self.link(repo)
+        self.assertEqual(self.run_cli("deinit", folder=repo), 0)
+        self.assertFalse(any("shared hooks" in line for line in self.printed), self.printed)
+        self.link(repo)
+        self.assertEqual(self.run_cli("deinit", "--shared-hooks", folder=repo), 0)
+        self.assertIn("No shared hook was in %s." % (repo / ".claude" / "settings.json"), self.printed)
 
     def test_a_folder_of_no_project_says_which_are_linked(self):
         self.link(self.base_repo("shop"))
@@ -258,6 +334,7 @@ class Uninstall(Linking):
         repo = self.base_repo("shop")
         self.link(repo)
         self.write(self.tmp / "logs" / "shop" / "lane.jsonl", "{}\n")
+        self.write(Path(self.environ["SIGNALBOX_SESSIONS_DIR"]) / "s1.json", "{}\n")
 
         self.assertEqual(self.run_cli("uninstall"), 0)
         self.assertEqual(json.loads(self.settings.read_text()), {"model": "opus"})
@@ -268,6 +345,7 @@ class Uninstall(Linking):
         self.assertEqual(self.run_cli("uninstall", "--purge"), 0)
         self.assertFalse(self.file.exists())
         self.assertFalse((self.tmp / "logs").exists())
+        self.assertFalse(Path(self.environ["SIGNALBOX_SESSIONS_DIR"]).exists(), "the sessions' records go too")
 
     def test_purge_refuses_while_a_lane_runs(self):
         from signalbox.atoms import lock

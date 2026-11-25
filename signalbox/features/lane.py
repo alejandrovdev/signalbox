@@ -2,7 +2,10 @@
 only after the project's gate passed on the result of merging it with the current base, the
 tree GitHub then writes to the base.
 
-    merge(repository, host, out, err, number, dry_run, allow_gate_change, caller)   exit code
+    merge(repository, host, out, err, number, dry_run, allow_gate_change, caller, group)
+                                     exit code; `group` names the group a run is part of
+    read_pull(host, gh, top, number) the pull request as gh pr view reads it, or None
+    refusal(pull, base)              why the lane refuses a pull request it read, or None
 
 Steps, in order. The whole run holds the lane's lock in the git common directory (and any
 `legacy_locks`), so a second run says it waits and takes its turn; the gate a killed run
@@ -70,8 +73,32 @@ def utc(seconds):
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(seconds))
 
 
+def read_pull(host, gh, top, number):
+    """(the pull request as gh pr view reads it, or None; what gh said on stderr)."""
+    done = host.run([gh, "pr", "view", str(number), "--json", VIEW_FIELDS], cwd=top)
+    try:
+        pull = json.loads(done.stdout) if done.returncode == 0 else None
+    except ValueError:
+        pull = None
+    return (pull if isinstance(pull, dict) else None), done.stderr
+
+
+def refusal(pull, base):
+    """Why the lane refuses a pull request: closed, a draft, on another base or from a fork."""
+    state = str(pull.get("state", "")).lower()
+    if state != "open":
+        return "it is %s, not open." % state
+    if pull.get("isDraft") is not False:
+        return "it is a draft."
+    if pull.get("baseRefName") != base:
+        return "it is based on %s, not %s." % (pull.get("baseRefName"), base)
+    if pull.get("isCrossRepository") is not False:
+        return "its head is in another repository."
+    return None
+
+
 class Run:
-    def __init__(self, repository, host, out, err, number, dry_run, allow_gate_change, caller):
+    def __init__(self, repository, host, out, err, number, dry_run, allow_gate_change, caller, group=None):
         self.repository = repository
         self.project = repository.project
         self.host = host
@@ -103,6 +130,7 @@ class Run:
             "mergeCommit": None,
             "failedStep": None,
             "gateLog": None,
+            "group": group,
         }
         self.logged = False
         self.gate = None  # the running gate's process
@@ -344,25 +372,15 @@ class Run:
     # the run
 
     def view(self):
-        done = self.gh("pr", "view", str(self.number), "--json", VIEW_FIELDS)
-        try:
-            pull = json.loads(done.stdout) if done.returncode == 0 else None
-        except ValueError:
-            pull = None
-        if not isinstance(pull, dict):
-            if done.stderr.strip():
-                self.err(done.stderr.rstrip("\n"))
+        pull, complaint = read_pull(self.host, self.gh_path, self.top, self.number)
+        if pull is None:
+            if complaint.strip():
+                self.err(complaint.rstrip("\n"))
             self.refuse("refused", "refused: gh pr view could not read it.")
         self.record["head"] = pull.get("headRefOid")
-        state = str(pull.get("state", "")).lower()
-        if state != "open":
-            self.refuse("refused", "refused: it is %s, not open." % state)
-        if pull.get("isDraft") is not False:
-            self.refuse("refused", "refused: it is a draft.")
-        if pull.get("baseRefName") != self.base:
-            self.refuse("refused", "refused: it is based on %s, not %s." % (pull.get("baseRefName"), self.base))
-        if pull.get("isCrossRepository") is not False:
-            self.refuse("refused", "refused: its head is in another repository.")
+        problem = refusal(pull, self.base)
+        if problem:
+            self.refuse("refused", "refused: " + problem)
         return pull["headRefName"], pull["headRefOid"]
 
     def attempts(self, head):
@@ -533,5 +551,5 @@ def stop_group(pgid):
         pass
 
 
-def merge(repository, host, out, err, number, dry_run=False, allow_gate_change=False, caller=()):
-    return Run(repository, host, out, err, number, dry_run, allow_gate_change, caller).run()
+def merge(repository, host, out, err, number, dry_run=False, allow_gate_change=False, caller=(), group=None):
+    return Run(repository, host, out, err, number, dry_run, allow_gate_change, caller, group).run()

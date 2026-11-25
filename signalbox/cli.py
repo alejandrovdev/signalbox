@@ -2,14 +2,19 @@
 
     setup                      once: check the prerequisites, choose the defaults, install the hooks
     init [folder]              link a repository's folder, choosing its features
-    deinit [folder]            unlink it
-    status                     the board: every worktree of this repository
+    deinit [folder]            unlink it (--shared-hooks: also remove the repository's hooks)
+    status                     the board: every worktree of this repository (--group: of
+                               each repository of its group)
     brief, changes             what the session hooks print
     sweep                      remove merged worktrees and merged local branches
-    merge <pr>                 the merge lane
+    merge <pr> [<project>#<pr> ...]
+                               the merge lane; with pull requests of other projects of its
+                               group, each in the group's order, stopping at the first that
+                               does not merge
     metrics                    flow metrics
     doctor                     check what each project needs on this Mac
-    hook <event>               what Claude Code's hooks run
+    hook <event>               what Claude Code's hooks run; each also records where its
+                               session stands, so the sweep keeps that worktree
     uninstall                  remove the hooks
 
 A command about a repository runs in a folder of it (any worktree), and says how to link one
@@ -22,14 +27,15 @@ and prints: what a command does is in the module it calls.
 import argparse
 import json
 import os
+import re
 import signal
 import sys
 from pathlib import Path
 
 from . import __version__, config, doctor, hooks, linked, linking, names, ui
 from . import repository as repositories
-from .atoms import tools
-from .features import board, brief, guard, lane, metrics, sweep
+from .atoms import sessions, tools
+from .features import board, brief, groups, guard, lane, metrics, sweep
 from .host import Host
 
 FEATURE_NAMES = {
@@ -56,6 +62,16 @@ def pull_request(text):
     if not text.isdigit() or text.startswith("0"):
         raise argparse.ArgumentTypeError("%r is not a pull request number" % text)
     return int(text)
+
+
+PROJECT_PULL = re.compile(r"^([a-z0-9][a-z0-9-]{0,31})#([1-9][0-9]*)$")
+
+
+def project_pull(text):
+    found = PROJECT_PULL.fullmatch(text)
+    if found is None:
+        raise argparse.ArgumentTypeError("%r is not <project>#<pr>, such as api#12" % text)
+    return found.group(1), int(found.group(2))
 
 
 def package_parent():
@@ -100,9 +116,35 @@ class Context:
         return repositories.open(project, self.host, self.folder)
 
 
+def group_of(context, project):
+    """The group of the folder's project; Refusal when it is in none."""
+    group = context.configuration().group_of(project.name)
+    if group is None:
+        raise repositories.Refusal(
+            'The project "%s" is in no group. Make one in the configuration (%s): [groups.<name>] with projects = ["%s", '
+            '"<another project>"], in dependency order.' % (project.name, context.config_file, project.name)
+        )
+    return group
+
+
+def opened_or_why(project, host):
+    try:
+        return repositories.open(project, host, project.directory)
+    except repositories.Refusal as refusal:
+        return str(refusal)
+
+
 def status(context):
     chosen = context.chosen
-    return board.status(context.repository("board"), context.host, context.out, as_json=chosen.json, github=not chosen.no_github)
+    repository = context.repository("board")
+    if not chosen.group:
+        return board.status(repository, context.host, context.out, as_json=chosen.json, github=not chosen.no_github)
+    group, configuration = group_of(context, repository.project), context.configuration()
+    opened = []
+    for name in group.projects:
+        project = configuration.project(name)
+        opened.append((project, repository if project == repository.project else opened_or_why(project, context.host)))
+    return board.group_status(group.name, opened, context.host, context.out, as_json=chosen.json, github=not chosen.no_github)
 
 
 def quietly(run):
@@ -121,7 +163,7 @@ def quietly(run):
 @quietly
 def brief_command(context):
     lines = []
-    brief.brief(context.repository("session-brief"), context.host, lines.append)
+    brief.brief(context.repository("session-brief"), context.host, lines.append, context.configuration())
     for line in lines:
         context.out(line)
 
@@ -150,15 +192,54 @@ def sweep_command(context):
     )
 
 
+def group_runs(context, repository, others):
+    """The group and (repository, number) of each pull request, in the group's order. Usage
+    when a project is named twice, unknown or outside the folder's project's group."""
+    project, configuration = repository.project, context.configuration()
+    group = configuration.group_of(project.name)
+    if group is None:
+        raise linking.Usage(
+            'the project "%s" is in no group: name pull requests of other projects only within a group '
+            "([groups.<name>] in the configuration)" % project.name
+        )
+    named = {project.name: (repository, context.chosen.number)}
+    for name, number in others:
+        if name in named:
+            raise linking.Usage('the project "%s" is named twice' % name)
+        if configuration.project(name) is None:
+            raise linking.Usage('unknown project "%s"' % name)
+        if name not in group.projects:
+            raise linking.Usage('the project "%s" is not in the group "%s" of "%s"' % (name, group.name, project.name))
+        named[name] = (None, number)
+    for name, (opened, number) in named.items():
+        if opened is None:
+            other = configuration.project(name)
+            if not other.has("merge-lane"):
+                raise repositories.Refusal(
+                    'The project "%s" does not have the merge-lane feature. Turn it on with: %s'
+                    % (name, names.command("init", str(other.directory)))
+                )
+            named[name] = (repositories.open(other, context.host, other.directory), number)
+    return group, [named[name] for name in group.projects if name in named]
+
+
 def merge_command(context):
     chosen = context.chosen
     repository = context.repository("merge-lane")
+    caller = sweep.caller_folders(context.host.environ)
+    group = runs = None
+    if chosen.others:
+        group, runs = group_runs(context, repository, chosen.others)
 
     def stopped(number, frame):
         raise lane.Interrupted(143)
 
     previous = signal.signal(signal.SIGTERM, stopped)
     try:
+        if runs:
+            return groups.merge(
+                group, runs, context.host, context.out, context.err, chosen.dry_run, chosen.allow_gate_change, caller
+            )
         return lane.merge(
             repository,
             context.host,
@@ -167,7 +248,7 @@ def merge_command(context):
             chosen.number,
             dry_run=chosen.dry_run,
             allow_gate_change=chosen.allow_gate_change,
-            caller=sweep.caller_folders(context.host.environ),
+            caller=caller,
         )
     finally:
         signal.signal(signal.SIGTERM, previous)
@@ -210,6 +291,7 @@ def run_hook(context):
         return 0
     if context.chosen.shared and hooks.installed(names.claude_settings(context.host.environ)):
         return 0  # the person's own hooks run it: once is enough
+    sessions.record(context.host, data)  # where the session stands, for the sweep; cheap and silent
     if event == "pre-tool-use":
         command = (data.get("tool_input") or {}).get("command") if isinstance(data.get("tool_input"), dict) else None
         if data.get("tool_name") != "Bash" or not isinstance(command, str):
@@ -219,7 +301,8 @@ def run_hook(context):
     folder = data.get("cwd") if isinstance(data.get("cwd"), str) and data.get("cwd") else os.getcwd()
     if not os.path.isdir(folder):
         return 0
-    project, _ = linked.project_for(context.configuration(), folder, context.host.git)
+    configuration = context.configuration()
+    project, _ = linked.project_for(configuration, folder, context.host.git)
     if project is None:
         return 0
     if event == "pre-tool-use":
@@ -233,7 +316,7 @@ def run_hook(context):
     if event == "session-start":
         if project.has("session-brief"):
             lines = []
-            brief.brief(repositories.open(project, context.host, folder), context.host, lines.append)
+            brief.brief(repositories.open(project, context.host, folder), context.host, lines.append, configuration)
             for line in lines:
                 context.out(line)
         if project.has("sweep"):
@@ -267,14 +350,28 @@ def parser():
     showing = command("status", status, "Show the board: what every worktree of this repository changes.")
     showing.add_argument("--json", action="store_true", help="print one JSON object")
     showing.add_argument("--no-github", action="store_true", help="leave out the open pull requests (no gh)")
+    showing.add_argument("--group", action="store_true", help="the board of each repository of this project's group, in its order")
     command("brief", brief_command, "Print what the session-start hook tells a session.")
     command("changes", changes_command, "Print what changed in the other worktrees since the last run here.")
     sweeping = command("sweep", sweep_command, "Remove merged, clean worktrees and merged local branches.")
     sweeping.add_argument("--dry-run", action="store_true", help="say what it would do, change nothing")
     sweeping.add_argument("--json", action="store_true", help="print one JSON object")
     sweeping.add_argument("--background", action="store_true", help="start it detached, print nothing, exit 0")
-    merging = command("merge", merge_command, "Merge a pull request through the lane, once its merged result passes the gate.")
-    merging.add_argument("number", type=pull_request, metavar="<pr>", help="the pull request's number")
+    merging = command(
+        "merge",
+        merge_command,
+        "Merge a pull request through the lane, once its merged result passes the gate. With pull requests of other "
+        "projects of its group, merge each through its own lane in the group's order, stopping at the first that does "
+        "not merge: what merged stays merged.",
+    )
+    merging.add_argument("number", type=pull_request, metavar="<pr>", help="the pull request's number, in this folder's project")
+    merging.add_argument(
+        "others",
+        nargs="*",
+        type=project_pull,
+        metavar="<project>#<pr>",
+        help="a pull request of another project of the group, such as api#12",
+    )
     merging.add_argument("--dry-run", action="store_true", help="merge and run the gate in the merge worktree, then stop")
     merging.add_argument(
         "--allow-gate-change", action="store_true", help="run a pull request that changes the gate's own files"
@@ -314,6 +411,11 @@ def parser():
     chosen_features(linking_folder)
     unlinking = command("deinit", lambda context: linking.deinit(context.chosen, context), "Unlink a repository's folder.")
     unlinking.add_argument("folder", nargs="?", help="a folder of the repository (default: this one)")
+    unlinking.add_argument(
+        "--shared-hooks",
+        action="store_true",
+        help="also remove the hooks init --shared-hooks wrote in the repository's .claude/settings.json",
+    )
     command(
         "doctor",
         lambda context: doctor.report(context.configuration(), context.host, names.claude_settings(context.host.environ), context.out),

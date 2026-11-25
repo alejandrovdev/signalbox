@@ -3,7 +3,8 @@
 
     setup(chosen, context)      the defaults new projects start from, and the user-level hooks
     init(chosen, context)       add or replace the project of a folder's repository
-    deinit(chosen, context)     remove it, with the merge worktree signalbox made for it
+    deinit(chosen, context)     remove it, with the merge worktree signalbox made for it and,
+                                with --shared-hooks, the hooks init wrote in the repository
     uninstall(chosen, context)  remove the hooks; with purge, the configuration, logs and caches
 
 `setup` and `init` ask their screens through the context's asker (drawn on the terminal, or
@@ -84,7 +85,7 @@ def setup(chosen, context):
     settings = names.claude_settings(context.host.environ)
     install = not chosen.no_hooks
     steps = [
-        screens.prerequisites(doctor.prerequisites(context.host, settings)),
+        screens.prerequisites(doctor.prerequisites(context.host, settings, "this setup installs them" if install else None)),
         screens.features("Default features"),
         screens.confirm("Save these defaults?", lambda given: answers.setup_summary(configuration, given, settings, install)),
     ]
@@ -184,7 +185,7 @@ def init(chosen, context):
         out('Renamed "%s" to "%s".' % (existing.name, project.name))
     out('Linked "%s" (%s) in %s.' % (project.name, project.path, context.config_file))
     if chosen.shared_hooks:
-        shared = top / ".claude" / "settings.json"
+        shared = shared_settings(top)
         try:
             hooks.install(shared, hook_command(host, shared=True), suffix=" --shared")
         except hooks.SettingsError as error:
@@ -226,6 +227,35 @@ def remove_merge_worktree(project, host, out):
     out("Removed the merge worktree %s." % path)
 
 
+def shared_settings(top):
+    """The repository's own Claude Code settings, where `init --shared-hooks` writes."""
+    return Path(top) / ".claude" / "settings.json"
+
+
+def remove_shared_hooks(top, out):
+    """Take the `--shared` hooks out of a repository's settings; whether that worked."""
+    path = shared_settings(top)
+    try:
+        removed = hooks.remove(path)
+    except hooks.SettingsError as error:
+        out("The shared hooks were not removed: %s" % error)
+        return False
+    out(("Removed the shared hooks from %s: commit that file." if removed else "No shared hook was in %s.") % path)
+    return True
+
+
+def unlinked_shared_hooks(folder, host, out):
+    """`deinit --shared-hooks` in a repository no project links any more: the hooks only, when
+    its settings hold them; None when there is nothing to do."""
+    where = worktrees.locate(host.git, folder) if folder.is_dir() else None
+    if where is None:
+        return None
+    top = Path(worktrees.listed(host.git, where.top)[0].path)  # the main checkout, as init
+    if not hooks.installed(shared_settings(top)):
+        return None
+    return 0 if remove_shared_hooks(top, out) else 1
+
+
 def deinit(chosen, context):
     out, host = context.out, context.host
     folder = Path(os.path.expanduser(chosen.folder)) if chosen.folder else context.folder
@@ -234,12 +264,19 @@ def deinit(chosen, context):
         project, _ = linked.project_for(configuration, folder, host.git)
     else:  # a folder that is gone: by the path the configuration names
         project = next((one for one in configuration.projects if config.folder_key(one.path) == config.folder_key(str(folder))), None)
+    if project is None and chosen.shared_hooks:
+        done = unlinked_shared_hooks(folder, host, out)
+        if done is not None:
+            return done
     if project is None:
         listed = ", ".join("%s (%s)" % (other.name, other.path) for other in configuration.projects)
         out("No project is linked to %s. %s" % (folder, "The linked projects: " + listed if listed else names.no_project()))
         return 1
-    config.save(answers.without(configuration, project), context.config_file)
+    remaining, said = answers.without(configuration, project)
+    config.save(remaining, context.config_file)
     out('Unlinked "%s" (%s) from %s.' % (project.name, project.path, context.config_file))
+    for line in said:
+        out(line)
     remove_merge_worktree(project, host, out)
     left = [
         "its logs in %s" % names.project_logs(project.name, host.environ),
@@ -247,6 +284,13 @@ def deinit(chosen, context):
         "the Claude Code hooks, which do nothing in a repository no project links",
     ]
     out("Left as they are: %s." % "; ".join(left))
+    if chosen.shared_hooks:
+        return 0 if remove_shared_hooks(project.directory, out) else 1
+    if hooks.installed(shared_settings(project.directory)):
+        out(
+            "The shared hooks stay in %s: remove them with: %s"
+            % (shared_settings(project.directory), names.command("deinit", str(project.directory), "--shared-hooks"))
+        )
     return 0
 
 
@@ -276,10 +320,10 @@ def uninstall(chosen, context):
         out("The Claude Code hooks were not removed: %s" % error)
         return 1
     out(("Removed the Claude Code hooks from %s." if removed else "No signalbox hook was in %s.") % settings)
-    places = [context.config_file, names.log_root(host.environ), names.cache_root(host.environ)]
+    places = [context.config_file, names.log_root(host.environ), names.cache_root(host.environ), names.sessions_dir(host.environ)]
     if not chosen.purge:
-        out("Left as they are: the configuration %s, the logs in %s and the merge worktrees in %s. Remove them with: %s"
-            % (places[0], places[1], places[2], names.command("uninstall", "--purge")))
+        out("Left as they are: the configuration %s, the logs in %s, the merge worktrees in %s and the sessions' records in %s. Remove them with: %s"
+            % (places[0], places[1], places[2], places[3], names.command("uninstall", "--purge")))
         return 0
     for project in configuration.projects:
         remove_merge_worktree(project, host, out)

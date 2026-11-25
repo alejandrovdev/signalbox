@@ -1,9 +1,10 @@
 """Tests of the sweep over temporary repositories with real git; `ps` and `lsof` are stand-ins."""
 
+import io
 import json
 import unittest
 
-from signalbox import repository
+from signalbox import cli, repository
 from signalbox.features import sweep
 from tests import repos
 from tests.repos import hours_ago, lines
@@ -365,6 +366,108 @@ class Sweep(repos.Scratch):
             self.sweep(repo), "sweep: kept worktree %s (feat/done): cannot tell when it was last used (no reflog)\n" % done
         )
         self.assertTrue(done.exists())
+
+
+    def test_keeps_a_worktree_whose_index_tells_git_not_to_check_some_files(self):
+        repo = self.base_repo()
+        skipped = self.merged_worktree(repo, "wt-skip", "feat/skip")
+        self.git(skipped, "update-index", "--skip-worktree", "wt-skip.txt")
+        self.write(skipped / "wt-skip.txt", "an edit git does not see")
+        assumed = self.merged_worktree(repo, "wt-assume", "feat/assume")
+        self.git(assumed, "update-index", "--assume-unchanged", "README.md")
+        self.write(assumed / "README.md", "an edit git does not see")
+        reason = "files git is told not to check (skip-worktree or assume-unchanged)"
+        self.assertEqual(
+            self.sweep(repo),
+            "sweep: kept worktree %s (feat/assume): %s\n"
+            "sweep: kept worktree %s (feat/skip): %s\n" % (assumed, reason, skipped, reason),
+        )
+        self.assertEqual((skipped / "wt-skip.txt").read_text(), "an edit git does not see")
+
+    # Sessions: what the hooks recorded of each Claude Code session.
+
+    def hook(self, session, cwd):
+        """A Bash call of a session standing in `cwd`, through the hook Claude Code runs."""
+        data = {"session_id": session, "tool_name": "Bash", "cwd": str(cwd), "tool_input": {"command": "git status"}}
+        code = cli.main(["hook", "pre-tool-use"], host=self.host, out=self.out, err=self.out, stdin=io.StringIO(json.dumps(data)), folder=cwd)
+        self.assertEqual((code, self.printed), (0, []))
+
+    def session(self, session, cwd, pid):
+        self.host.claude = pid
+        self.host.started[pid] = [AGENT_STARTED_UTC, AGENT_STARTED_LOCAL]
+        self.hook(session, cwd)
+        return self.tmp / "sessions" / ("%s.json" % session)
+
+    def test_keeps_a_worktree_a_live_session_stands_in_until_that_session_ends(self):
+        repo = self.base_repo()
+        done = self.merged_worktree(repo, "wt-done", "feat/done")
+        (done / "sub").mkdir()
+        record = self.session("5e55101d-0000-4000-8000-000000000001", done / "sub", 4242)
+        self.assertEqual(
+            self.sweep(repo),
+            "sweep: kept worktree %s (feat/done): a live Claude Code session stands in it (session 5e55101d)\n" % done,
+        )
+        self.assertTrue(done.exists())
+        self.assertTrue(record.exists())
+
+        del self.host.started[4242]  # the session ended
+        self.assertEqual(
+            self.sweep(repo),
+            "sweep: removed worktree %s (feat/done, merged into origin/main)\n"
+            "sweep: deleted branch feat/done (merged into origin/main)\n" % done,
+        )
+        self.assertFalse(done.exists())
+        self.assertFalse(record.exists(), "the record of a session that ended goes")
+
+    def test_a_session_that_moved_elsewhere_or_whose_pid_was_reused_does_not_keep_a_worktree(self):
+        repo = self.base_repo()
+        moved = self.merged_worktree(repo, "wt-moved", "feat/moved")
+        reused = self.merged_worktree(repo, "wt-reused", "feat/reused")
+        self.session("moved", moved, 4242)
+        self.hook("moved", repo)  # it went back to the main checkout
+        self.session("reused", reused, 4343)
+        self.host.started[4343] = ["Wed Nov 25 10:00:00 2026", "Wed Nov 25 04:00:00 2026"]  # another process
+        self.assertEqual(
+            self.sweep(repo),
+            "sweep: removed worktree %s (feat/moved, merged into origin/main)\n"
+            "sweep: removed worktree %s (feat/reused, merged into origin/main)\n"
+            "sweep: deleted branch feat/moved (merged into origin/main)\n"
+            "sweep: deleted branch feat/reused (merged into origin/main)\n" % (moved, reused),
+        )
+        self.assertEqual(sorted(path.name for path in (self.tmp / "sessions").iterdir()), ["moved.json"])
+
+    def test_keeps_a_worktree_a_recorded_session_stands_in_when_ps_cannot_be_read(self):
+        repo = self.base_repo()
+        done = self.merged_worktree(repo, "wt-done", "feat/done")
+        record = self.session("unknown", done, 4242)
+        self.host.started = None
+        self.assertEqual(
+            self.sweep(repo),
+            "sweep: kept worktree %s (feat/done): cannot tell whether a recorded session still runs (ps failed)\n" % done,
+        )
+        self.assertTrue(record.exists())
+
+    def test_a_dry_run_prunes_no_record_and_a_bad_record_is_passed_over(self):
+        repo = self.base_repo()
+        done = self.merged_worktree(repo, "wt-done", "feat/done")
+        ended = self.session("ended", self.tmp, 4242)
+        del self.host.started[4242]
+        folder = self.tmp / "sessions"
+        bad = {
+            "not-json.json": "{",
+            "a-list.json": "[]",
+            "no-pid.json": json.dumps({"cwd": str(done), "started": [AGENT_STARTED_UTC], "updated": 1}),
+            "bad name.json": json.dumps({"cwd": str(done), "pid": 4343, "started": [AGENT_STARTED_UTC], "updated": 1}),
+        }
+        for name, text in bad.items():
+            self.write(folder / name, text)
+        self.host.started[4343] = [AGENT_STARTED_UTC, AGENT_STARTED_LOCAL]
+
+        self.assertIn("would remove worktree %s" % done, self.sweep(repo, dry_run=True))
+        self.assertTrue(ended.exists())
+        self.assertIn("removed worktree %s" % done, self.sweep(repo))
+        self.assertFalse(ended.exists())
+        self.assertEqual(sorted(path.name for path in folder.iterdir()), sorted(bad))
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ import json
 import os
 import unittest
 
-from signalbox import names, repository
+from signalbox import config, names, repository
 from signalbox.features import board, brief
 from tests import repos
 from tests.repos import lines
@@ -260,6 +260,101 @@ class Brief(repos.Scratch):
         listed = [line for line in shown if line.startswith("- long-branch-name-")]
         self.assertGreater(len(listed), 0)
         self.assertEqual(shown[-2], "- +%d more worktrees" % (14 - len(listed)))
+
+    def grouped(self, *others, **values):
+        """A configuration whose group `platform` holds this repository's project and others."""
+        values.setdefault("gate", "make check")
+        values.setdefault("feature_docs", FEATURE_DOCS)
+        shop = repos.project(self.tmp / "repo", **values)
+        projects = (shop,) + others
+        return config.Config(projects, groups=(config.Group("platform", tuple(project.name for project in projects)),))
+
+    def other_repository(self):
+        """`api`, based on trunk: worktree x changes a file and its feature document, worktree w
+        sits on trunk's tip (clean against trunk, not against main), y and a detached one
+        change nothing."""
+        api = self.base_repo("api")
+        self.git(api, "checkout", "-q", "-b", "trunk")
+        self.write(api / "t.txt", "trunk")
+        self.commit_all(api, "trunk moves")
+        self.git(api, "update-ref", "refs/remotes/origin/trunk", "trunk")
+        self.git(api, "checkout", "-q", "main")
+        x = self.add_worktree(api, "api-x", "x", "trunk")
+        self.write(x / "docs/specs/feature-x.md", "x")
+        self.write(x / "x.txt", "x")
+        self.add_worktree(api, "api-w", "w", "trunk")
+        self.add_worktree(api, "api-y", "y", "main")
+        self.git(api, "worktree", "add", "-q", "--detach", str(self.tmp / "api-detached"), "main")
+        return config.Project("api", str(api), ("board",), base="trunk", feature_docs=("docs/specs/*.md",))
+
+    def test_lists_the_worktrees_of_the_other_repositories_of_its_group_last(self):
+        repo = self.base_repo()
+        a = self.add_worktree(repo, "wt-a", "a")
+        self.write(a / "a.txt", "a")
+        api = self.other_repository()
+        bare = self.tmp / "no-origin"
+        bare.mkdir()
+        self.git(bare, "init", "-q", "-b", "main")
+        self.write(bare / "f.txt", "f")
+        self.commit_all(bare, "start")
+        unreadable = (
+            config.Project("gone", str(self.tmp / "gone"), ("board",)),
+            config.Project("bare", str(bare), ("board",)),
+        )
+        configuration = self.grouped(api, *unreadable)
+        calls = self.stub_gh("[]")
+
+        brief.brief(self.open(repo), self.host, self.out, configuration)
+
+        self.assertEqual(
+            self.text(),
+            "\n".join(
+                [
+                    "This worktree: main, 0 behind origin/main, no conflict with origin/main.",
+                    "Other worktrees that change files:",
+                    "- a",
+                    MERGE_LINE,
+                    "Other repositories of platform:",
+                    "- api: x; features: feature-x",
+                    "",
+                ]
+            ),
+        )
+        self.assertEqual(calls(), [], "the brief reads git only")
+
+    def test_says_nothing_of_a_group_whose_other_repositories_change_nothing_or_without_a_group(self):
+        repo = self.base_repo()
+        self.base_repo("api")
+        alone = "This worktree: main, 0 behind origin/main, no conflict with origin/main.\n" + MERGE_LINE + "\n"
+        api = config.Project("api", str(self.tmp / "api"), ("board",))
+        brief.brief(self.open(repo), self.host, self.out, self.grouped(api))
+        self.assertEqual(self.text(), alone)
+        self.printed = []
+        brief.brief(self.open(repo), self.host, self.out, config.Config((repos.project(repo), api)))
+        self.assertEqual(self.text(), alone)
+
+    def test_cuts_the_groups_lines_before_this_repositorys_within_2000_characters(self):
+        repo = self.base_repo()
+        for number in range(8):
+            folder = self.add_worktree(repo, "wt-%d" % number, "long-branch-name-" * 10 + str(number))
+            self.write(folder / ("own-%d.txt" % number), "x")
+        api = self.base_repo("api")
+        for number in range(6):
+            folder = self.add_worktree(api, "api-%d" % number, "other-branch-name-" * 10 + str(number))
+            self.write(folder / ("theirs-%d.txt" % number), "x")
+        configuration = self.grouped(config.Project("api", str(api), ("board",)))
+
+        brief.brief(self.open(repo), self.host, self.out, configuration)
+
+        text = self.text()
+        self.assertLessEqual(len(text), 2000)
+        shown = text.rstrip("\n").split("\n")
+        self.assertEqual(len([line for line in shown if line.startswith("- long-branch-name-")]), 8, "this repository's lines all stay")
+        self.assertIn(MERGE_LINE, shown)
+        at = shown.index("Other repositories of platform:")
+        listed = [line for line in shown[at + 1 :] if line.startswith("- api: other-branch-name-")]
+        self.assertLess(len(listed), 6)
+        self.assertEqual(shown[-1], "- +%d more worktrees" % (6 - len(listed)))
 
     def test_a_detached_worktree_says_so(self):
         repo = self.base_repo()

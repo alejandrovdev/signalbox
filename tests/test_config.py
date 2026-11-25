@@ -182,6 +182,83 @@ colour = "blue"
         self.assertIn(("defaults.gate", "unknown key"), found)
 
 
+GROUPED = """
+[projects.api]
+path = "/w/api"
+preset = "minimal"
+
+[projects.web]
+path = "/w/web"
+preset = "minimal"
+
+[projects.shop]
+path = "/w/shop"
+preset = "minimal"
+
+[groups.platform]
+projects = ["api", "web", "shop"]
+"""
+
+
+class Groups(unittest.TestCase):
+    def test_reads_a_group_in_its_order_and_finds_a_projects_group(self):
+        parsed = config.parse(GROUPED)
+        self.assertEqual(parsed.groups, (config.Group("platform", ("api", "web", "shop")),))
+        self.assertEqual(parsed.group_of("web"), parsed.groups[0])
+        self.assertIsNone(config.parse(ONE).group_of("shop"))
+        self.assertEqual(config.parse(ONE).groups, ())
+
+    def test_refuses_what_is_wrong_with_a_group_by_key(self):
+        text = GROUPED + """
+[groups.second]
+projects = ["web", "blog"]
+
+[groups.lonely]
+projects = ["api"]
+
+[groups.odd]
+projects = ["shop", "api"]
+colour = "blue"
+
+[groups.Bad]
+projects = ["api", "web"]
+
+[groups.shapeless]
+projects = "api"
+
+[groups.empty]
+"""
+        found = problems(text)
+        self.assertEqual(
+            found,
+            [
+                ("groups.second.projects", 'the project "web" is already in the group "platform"'),
+                ("groups.second.projects", 'unknown project "blog"'),
+                ("groups.lonely.projects", 'the project "api" is already in the group "platform"'),
+                ("groups.lonely.projects", "name at least two projects"),
+                ("groups.odd.projects", 'the project "shop" is already in the group "platform"'),
+                ("groups.odd.projects", 'the project "api" is already in the group "platform"'),
+                ("groups.odd.colour", "unknown key"),
+                ("groups.Bad", "a group's name has lowercase letters, digits and hyphens, at most 32"),
+                ("groups.shapeless.projects", "must be a list of project names"),
+                ("groups.empty.projects", "missing"),
+            ],
+        )
+
+    def test_a_project_named_twice_in_one_group(self):
+        text = GROUPED.replace('["api", "web", "shop"]', '["api", "web", "api"]')
+        self.assertEqual(problems(text), [("groups.platform.projects", 'the project "api" is already in the group "platform"')])
+
+    def test_groups_that_are_not_a_table(self):
+        self.assertIn(("groups", "must be a table of groups"), problems('groups = ["a"]\n'))
+
+    def test_dump_writes_the_groups_after_the_projects_and_reads_back_the_same(self):
+        parsed = config.parse(GROUPED)
+        text = config.dump(parsed)
+        self.assertTrue(text.endswith('\n[groups.platform]\nprojects = ["api", "web", "shop"]\n'), text)
+        self.assertEqual(config.parse(text), parsed)
+
+
 class Write(unittest.TestCase):
     def test_dump_reads_back_as_the_same_configuration(self):
         parsed = config.parse(FULL)

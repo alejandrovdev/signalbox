@@ -3,6 +3,11 @@ checkout, a stub `gh` that answers `pr view` from the test's JSON, merges on the
 (honoring `--match-head-commit`) and records every call, and a gate committed in the made-up
 repository that records what it checked and passes or fails as the test's control files say.
 `git` is the real one.
+
+`add_repository` makes another such repository, with its own origin, checkout and control
+folder: the stub `gh` then answers from the control folder and origin of the repository it
+runs in (`routes.json` in the first control folder), and the other project's gate records in
+its own control folder (its `gate_env`).
 """
 
 import json
@@ -11,6 +16,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 from signalbox import config, repository
 from tests import repos
@@ -28,6 +34,12 @@ GH = """#!%(python)s
 import json, os, subprocess, sys
 ctrl = os.environ["LANE_TEST_CONTROL"]
 origin = os.environ["LANE_TEST_ORIGIN"]
+routes = os.path.join(ctrl, "routes.json")
+if os.path.exists(routes):  # several made-up repositories: the one gh runs in
+    here = os.path.realpath(os.getcwd())
+    for top, (ctrl_here, origin_here) in json.load(open(routes)).items():
+        if here == top or here.startswith(top + os.sep):
+            ctrl, origin = ctrl_here, origin_here
 args = sys.argv[1:]
 with open(os.path.join(ctrl, "gh-calls"), "a") as calls:
     calls.write("\\x1f".join(args) + "\\n")
@@ -98,17 +110,7 @@ class Lane(repos.Scratch):
         )
         self.stub("gh", "").write_text(GH % {"python": sys.executable})
         self.stub("push-commit", PUSH_COMMIT[len("#!/bin/sh\n") :])
-        self.git(self.tmp, "init", "--quiet", "--bare", "--initial-branch", "main", str(self.origin))
-        self.seed.mkdir()
-        self.git(self.seed, "init", "--quiet", "--initial-branch", "main")
-        self.write(self.seed / "scripts/check.sh", GATE)
-        self.write(self.seed / "README.md", "Made-up repository\n")
-        self.write(self.seed / ".gitignore", "node_modules/\n")
-        self.git(self.seed, "add", ".")
-        self.git(self.seed, "commit", "--quiet", "--message", "start")
-        self.git(self.seed, "remote", "add", "origin", str(self.origin))
-        self.git(self.seed, "push", "--quiet", "origin", "main")
-        self.git(self.tmp, "clone", "--quiet", str(self.origin), str(self.checkout))
+        self.made_up(self.origin, self.seed, self.checkout)
         # The caller's checkout: another branch, a modified file and a staged one.
         self.git(self.checkout, "checkout", "--quiet", "-b", "work")
         self.write(self.checkout / "README.md", "Made-up repository\nlocal edit\n")
@@ -119,26 +121,66 @@ class Lane(repos.Scratch):
 
     # the made-up GitHub
 
-    def origin_rev(self, ref):
-        return self.git(self.origin, "rev-parse", ref).strip()
+    def made_up(self, origin, seed, checkout):
+        """A bare origin whose main holds the gate, the seed that pushed it, and a clone."""
+        self.git(self.tmp, "init", "--quiet", "--bare", "--initial-branch", "main", str(origin))
+        seed.mkdir()
+        self.git(seed, "init", "--quiet", "--initial-branch", "main")
+        self.write(seed / "scripts/check.sh", GATE)
+        self.write(seed / "README.md", "Made-up repository\n")
+        self.write(seed / ".gitignore", "node_modules/\n")
+        self.git(seed, "add", ".")
+        self.git(seed, "commit", "--quiet", "--message", "start")
+        self.git(seed, "remote", "add", "origin", str(origin))
+        self.git(seed, "push", "--quiet", "origin", "main")
+        self.git(self.tmp, "clone", "--quiet", str(origin), str(checkout))
 
-    def push_commit(self, branch, file, line, base=None):
+    def add_repository(self, name):
+        """Another made-up repository, `name`, in a folder of its own: its origin, seed,
+        checkout (on main) and control folder, and its project, which `project` is for the first."""
+        folder = self.tmp / name
+        other = SimpleNamespace(
+            name=name, origin=folder / "origin.git", seed=folder / "seed", checkout=folder / "checkout", control=folder / "control"
+        )
+        folder.mkdir()
+        other.control.mkdir()
+        self.made_up(other.origin, other.seed, other.checkout)
+        routes = self.control / "routes.json"
+        known = json.loads(routes.read_text()) if routes.exists() else {str(self.checkout): [str(self.control), str(self.origin)]}
+        known[str(other.checkout)] = [str(other.control), str(other.origin)]
+        routes.write_text(json.dumps(known))
+
+        def project(**values):
+            values.setdefault("gate", "sh scripts/check.sh")
+            values.setdefault("gate_env", (("CHECK_WORKERS", "3"), ("LANE_TEST_CONTROL", str(other.control))))
+            values.setdefault("gate_failed_step", FAILED_STEP)
+            features = values.pop("features", tuple(config.FEATURES))
+            return config.Project(name, str(other.checkout), features, **values)
+
+        other.project = project
+        return other
+
+    def origin_rev(self, ref, other=None):
+        return self.git(other.origin if other else self.origin, "rev-parse", ref).strip()
+
+    def push_commit(self, branch, file, line, base=None, other=None):
         done = subprocess.run(
             [str(self.bin / "push-commit"), branch, file, line, *([base] if base else [])],
-            env=self.environ,
+            env=dict(self.environ, LANE_TEST_SEED=str(other.seed)) if other else self.environ,
             capture_output=True,
             text=True,
         )
         self.assertEqual(done.returncode, 0, done.stderr)
-        return self.origin_rev("refs/heads/" + branch)
+        return self.origin_rev("refs/heads/" + branch, other)
 
-    def open_pr(self, number, branch, **overrides):
-        """Push a branch with one commit over main and describe it as pull request `number`."""
-        head = self.push_commit(branch, "%s.txt" % branch.replace("/", "-"), branch, "main")
-        self.describe(number, branch, head, **overrides)
+    def open_pr(self, number, branch, other=None, **overrides):
+        """Push a branch with one commit over main and describe it as pull request `number`
+        (of the other repository, when given)."""
+        head = self.push_commit(branch, "%s.txt" % branch.replace("/", "-"), branch, "main", other)
+        self.describe(number, branch, head, other, **overrides)
         return head
 
-    def describe(self, number, branch, head, **overrides):
+    def describe(self, number, branch, head, other=None, **overrides):
         pull = {
             "number": number,
             "state": "OPEN",
@@ -149,7 +191,7 @@ class Lane(repos.Scratch):
             "isCrossRepository": False,
         }
         pull.update(overrides)
-        (self.control / ("pr-%d.json" % number)).write_text(json.dumps(pull))
+        ((other.control if other else self.control) / ("pr-%d.json" % number)).write_text(json.dumps(pull))
 
     def on_event(self, name, body, once=True):
         """A script the stubs run: `during-gate` from the gate, `after-merge` from gh pr merge."""
@@ -157,18 +199,18 @@ class Lane(repos.Scratch):
         path.write_text("#!/bin/sh\n" + ('rm -f -- "$0"\n' if once else "") + body + "\n")
         path.chmod(0o755)
 
-    def gh_calls(self):
-        path = self.control / "gh-calls"
+    def gh_calls(self, other=None):
+        path = (other.control if other else self.control) / "gh-calls"
         return [line.split("\x1f") for line in path.read_text().splitlines()] if path.exists() else []
 
-    def gate_calls(self):
-        path = self.control / "gate-calls"
+    def gate_calls(self, other=None):
+        path = (other.control if other else self.control) / "gate-calls"
         if not path.exists():
             return []
         return [dict(zip(("tree", "base", "head", "workers"), line.split())) for line in path.read_text().splitlines()]
 
-    def records(self):
-        path = self.tmp / "logs" / "shop" / "lane.jsonl"
+    def records(self, name="shop"):
+        path = self.tmp / "logs" / name / "lane.jsonl"
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
     def caller_state(self):
