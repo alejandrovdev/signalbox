@@ -8,9 +8,16 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
-from signalbox import cli, config, hooks
-from signalbox.ui.widgets import BACKSPACE, DOWN, ENTER, SPACE
+from signalbox import cli, config, hooks, linking, screens
+from signalbox.ui import scene
+from signalbox.ui.widgets import BACKSPACE, CTRL_C, DOWN, ENTER, ESC, SPACE, UP, Choice
 from tests import repos
+
+
+def screen_text(sequence):
+    """The whole screen a sequence draws at its step, as text."""
+    canvas = scene.compose(scene.view_of(sequence, "1.0.0"), 140, 42, 0)
+    return "\n".join(canvas.line(row) for row in range(canvas.height))
 
 
 class Linking(repos.Scratch):
@@ -88,6 +95,250 @@ class Setup(Linking):
         self.assertRegex(body, r"ok       git \d+\.\d+")
 
 
+    def test_the_screens_show_the_default_features_and_that_the_hooks_install(self):
+        keys = repos.Keys(ENTER, ENTER, "n")
+        self.run_cli("setup", keys=keys)
+
+        features = ", ".join(config.PRESETS["recommended"])
+        for title in ("Prerequisites", "Default features", "Summary"):
+            self.assertEqual(scene.view_of(keys.at(title)).answers, {"features": features, "hooks": "install"}, title)
+        text = screen_text(keys.at("Summary"))
+        self.assertRegex(text, r"FEATURES +board, ")
+        self.assertRegex(text, r"HOOKS +install")
+
+    def test_with_no_hooks_the_screens_say_the_hooks_are_not_installed(self):
+        keys = repos.Keys(ENTER, DOWN, SPACE, ENTER, "n")  # session-brief off
+        self.run_cli("setup", "--no-hooks", keys=keys)
+
+        features = ", ".join(name for name in config.FEATURES if name != "session-brief")
+        self.assertEqual(scene.view_of(keys.at("Summary")).answers, {"features": features, "hooks": "not installed"})
+
+
+INSTALL = screens.INSTALL_TITLE
+
+
+class InstallingWhatIsMissing(Linking):
+    """With Homebrew there and git, gh or Claude Code missing, setup warns, offers to install
+    them, and installs only after the summary's yes."""
+
+    def setUp(self):
+        super().setUp()
+        self.brew = str(self.stub("brew", "exit 99"))  # never run: the host records instead
+        self.environ["SIGNALBOX_BREW"] = self.brew
+        self.environ["SIGNALBOX_CLAUDE"] = str(self.stub("fake-claude", "exit 0"))
+
+    def missing(self, *names):
+        for name in names:
+            self.environ["SIGNALBOX_" + name.upper()] = str(self.tmp / ("no-" + name))
+
+    def done(self):
+        return [
+            "Saved the configuration in %s." % self.file,
+            "Installed the Claude Code hooks in %s." % self.settings,
+            "Next: in a repository's folder, run: signalbox init",
+        ]
+
+    def test_it_warns_and_offers_to_install_starting_on_skip(self):
+        self.missing("gh", "claude")
+        keys = repos.Keys(ENTER, "q")
+
+        self.assertEqual(self.run_cli("setup", keys=keys), 1)
+
+        self.assertEqual(keys.titles(), ["Prerequisites", INSTALL])
+        body = keys.last("Prerequisites").body
+        self.assertEqual(body[-2:], ("", screens.WARNING))
+        self.assertNotIn(screens.NOTHING_INSTALLED, body)
+        offer = keys.last(INSTALL)
+        self.assertIsInstance(offer, Choice)
+        self.assertEqual(
+            [(item.value, item.label, item.note) for item in offer.items],
+            [
+                ("yes", "Install with Homebrew", "brew install gh; brew install --cask claude-code"),
+                ("no", "Skip", "install them yourself; `signalbox doctor` lists them"),
+            ],
+        )
+        self.assertEqual((offer.cursor, offer.current), (1, None), "it starts on Skip, marked as nothing saved")
+        self.assertEqual(scene.view_of(keys.at(INSTALL)).answers["install"], "nothing")
+        text = screen_text(keys.at(INSTALL))
+        self.assertIn("Install with Homebrew", text)
+        self.assertRegex(text, r"INSTALL +nothing")
+        self.assertEqual(self.host.installs, [])
+        self.assertEqual(self.printed, ["Nothing was changed."])
+
+    def test_without_homebrew_or_with_nothing_missing_nothing_is_offered(self):
+        for gone, brew, last in (("gh", False, screens.GET_HOMEBREW), (None, True, screens.NOTHING_INSTALLED)):
+            self.environ["SIGNALBOX_BREW"] = self.brew if brew else str(self.tmp / "no-brew")
+            self.environ.pop("SIGNALBOX_GH", None)
+            if gone:
+                self.missing(gone)
+            keys = repos.Keys(ENTER, "q")
+
+            self.run_cli("setup", keys=keys)
+
+            self.assertEqual(keys.titles(), ["Prerequisites", "Default features"])
+            body = keys.last("Prerequisites").body
+            self.assertEqual(body[-2:], ("", last))
+            self.assertNotIn(screens.WARNING, body)
+            self.assertNotIn("install", scene.view_of(keys.at("Default features")).answers)
+
+    def test_the_install_is_listed_in_the_summary_and_runs_after_its_yes_before_saving(self):
+        self.missing("gh", "claude")
+        keys = repos.Keys(ENTER, UP, ENTER, ENTER, "y")
+
+        self.assertEqual(self.run_cli("setup", keys=keys), 0)
+
+        self.assertEqual(keys.titles(), ["Prerequisites", INSTALL, "Default features", "Summary"])
+        self.assertEqual(keys.last("Summary").body[-1], "Install with Homebrew: gh, Claude Code")
+        self.assertEqual(scene.view_of(keys.at("Summary")).answers["install"], "gh, Claude Code")
+        self.assertRegex(screen_text(keys.at("Summary")), r"INSTALL +gh, Claude Code")
+        self.assertEqual(
+            self.host.installs, [[self.brew, "install", "gh"], [self.brew, "install", "--cask", "claude-code"]]
+        )
+        self.assertEqual(
+            self.printed,
+            [
+                "Installing gh: brew install gh",
+                linking.GH_SIGN_IN,
+                "Installing Claude Code: brew install --cask claude-code",
+                linking.CLAUDE_SIGN_IN,
+            ]
+            + self.done(),
+        )
+        self.assertEqual(self.saved().defaults.features, config.PRESETS["recommended"])
+        self.assertEqual(hooks.installed(self.settings), list(hooks.EVENTS))
+
+    def test_skip_installs_nothing_and_the_summary_does_not_list_it(self):
+        self.missing("gh")
+        keys = repos.Keys(ENTER, ENTER, ENTER, "y")
+
+        self.assertEqual(self.run_cli("setup", keys=keys), 0)
+
+        self.assertFalse([line for line in keys.last("Summary").body if "Homebrew" in line])
+        self.assertEqual(scene.view_of(keys.at("Summary")).answers["install"], "nothing")
+        self.assertEqual(self.host.installs, [])
+        self.assertEqual(self.printed, self.done())
+
+    def test_the_final_no_quitting_or_ctrl_c_after_choosing_to_install_installs_and_writes_nothing(self):
+        self.missing("gh")
+        for keys in (repos.Keys(ENTER, UP, ENTER, ENTER, "n"), repos.Keys(ENTER, UP, ENTER, "q"), repos.Keys(ENTER, UP, CTRL_C)):
+            self.assertEqual(self.run_cli("setup", keys=keys), 1)
+
+            self.assertEqual(self.host.installs, [])
+            self.assertEqual(self.printed, ["Nothing was changed."])
+            self.assertFalse(self.file.exists())
+            self.assertFalse(self.settings.exists())
+
+    def test_going_back_from_install_to_skip_installs_nothing(self):
+        self.missing("gh")
+        keys = repos.Keys(ENTER, UP, ENTER, ESC, DOWN, ENTER, ENTER, "y")
+
+        self.assertEqual(self.run_cli("setup", keys=keys), 0)
+
+        self.assertEqual(self.host.installs, [])
+        self.assertFalse(any("Homebrew" in line for line in keys.last("Summary").body))
+
+    def test_yes_alone_installs_nothing(self):
+        self.missing("gh", "claude")
+
+        self.assertEqual(self.run_cli("setup", "--yes"), 0)
+
+        self.assertEqual(self.keys.asked, 0)
+        self.assertEqual(self.host.installs, [])
+        self.assertEqual(self.printed, self.done())
+
+    def test_install_missing_with_yes_installs_reports_a_failure_goes_on_saves_and_exits_one(self):
+        self.missing("gh", "claude")
+        self.host.install_codes[self.brew + " install gh"] = 1
+
+        self.assertEqual(self.run_cli("setup", "--install-missing", "--yes"), 1)
+
+        self.assertEqual(self.keys.asked, 0)
+        self.assertEqual(
+            self.host.installs, [[self.brew, "install", "gh"], [self.brew, "install", "--cask", "claude-code"]]
+        )
+        self.assertEqual(
+            self.printed,
+            [
+                "Installing gh: brew install gh",
+                "Could not install gh: brew exited 1.",
+                "Installing Claude Code: brew install --cask claude-code",
+                linking.CLAUDE_SIGN_IN,
+            ]
+            + self.done(),
+        )
+        self.assertEqual(self.saved().defaults.features, config.PRESETS["recommended"])
+        self.assertEqual(hooks.installed(self.settings), list(hooks.EVENTS))
+
+    def test_a_failed_claude_code_install_does_not_say_to_sign_in(self):
+        self.missing("claude")
+        self.host.install_codes[self.brew + " install --cask claude-code"] = 127
+
+        self.assertEqual(self.run_cli("setup", "--install-missing", "--yes"), 1)
+
+        self.assertEqual(
+            self.printed[:2],
+            ["Installing Claude Code: brew install --cask claude-code", "Could not install Claude Code: brew exited 127."],
+        )
+        self.assertNotIn(linking.CLAUDE_SIGN_IN, self.printed)
+
+    def test_an_old_git_is_installed_with_homebrew(self):
+        self.environ["SIGNALBOX_GIT"] = str(self.stub("old-git", "echo git version 2.30.1"))
+
+        self.assertEqual(self.run_cli("setup", "--install-missing", "--yes"), 0)
+
+        self.assertEqual(self.host.installs, [[self.brew, "install", "git"]])
+        self.assertEqual(self.printed, ["Installing git: brew install git"] + self.done())
+
+    def test_the_install_missing_flag_answers_the_screen_and_the_summary_still_asks(self):
+        self.missing("gh")
+        keys = repos.Keys(ENTER, ENTER, "n")
+
+        self.assertEqual(self.run_cli("setup", "--install-missing", keys=keys), 1)
+
+        self.assertNotIn(INSTALL, keys.titles())
+        self.assertEqual(keys.last("Summary").body[-1], "Install with Homebrew: gh")
+        self.assertEqual(self.host.installs, [])
+        self.assertEqual(self.printed, ["Nothing was changed."])
+
+    def test_install_missing_without_homebrew_says_why_nothing_was_installed_and_exits_one(self):
+        self.environ["SIGNALBOX_BREW"] = str(self.tmp / "no-brew")
+        self.missing("gh")
+
+        self.assertEqual(self.run_cli("setup", "--install-missing", "--yes"), 1)
+
+        self.assertEqual(self.host.installs, [])
+        self.assertEqual(self.printed, [linking.NO_HOMEBREW % "gh"] + self.done())
+
+    def test_install_missing_with_nothing_missing_says_so(self):
+        self.assertEqual(self.run_cli("setup", "--install-missing", "--yes"), 0)
+
+        self.assertEqual(self.host.installs, [])
+        self.assertEqual(self.printed, [linking.NOTHING_MISSING] + self.done())
+
+    def test_a_gh_not_signed_in_is_never_installed_and_setup_says_to_sign_in(self):
+        self.stub_gh(code=1)
+
+        self.assertEqual(self.run_cli("setup", "--install-missing", "--yes"), 0)
+
+        self.assertEqual(self.host.installs, [])
+        self.assertEqual(self.printed, [linking.NOTHING_MISSING, linking.GH_SIGN_IN] + self.done())
+        self.assertNotIn("auth login", " ".join(" ".join(words) for words in self.host.installs))
+
+    def test_the_plain_questions_offer_the_install_too(self):
+        self.missing("gh")
+        asked, said = iter(["", "1", "", "y"]), []
+        from signalbox import ui
+
+        console = ui.Console(read=lambda prompt="": said.append(prompt) or next(asked), write=said.append, tty=False)
+        self.keys = console
+        self.printed = []
+        code = cli.main(["setup"], host=self.host, out=self.out, err=self.errors.append, asker=console, folder=self.tmp)
+
+        self.assertEqual(code, 0)
+        self.assertIn(INSTALL, "\n".join(str(line) for line in said))
+        self.assertEqual(self.host.installs, [[self.brew, "install", "gh"]])
+
+
 class Init(Linking):
     def setUp(self):
         super().setUp()
@@ -128,6 +379,39 @@ class Init(Linking):
         worktree = self.add_worktree(self.repo, "wt-a", "a")
         self.assertEqual(self.run_cli("init", "--preset", "minimal", "--yes", folder=worktree), 0)
         self.assertEqual(self.saved().projects[0].path, str(self.repo))
+
+    def test_the_screens_show_the_project_its_base_its_features_and_its_gate(self):
+        self.write(self.repo / "Makefile", "check:\n\ttrue\n")
+        keys = repos.Keys(ENTER, ENTER, ENTER, "n")
+        self.run_cli("init", "--base", "trunk", keys=keys, folder=self.repo)
+
+        features = ", ".join(config.PRESETS["recommended"])
+        shown = {"project": "shop", "base": "trunk", "features": features, "gate": "make check"}
+        for title in ("Project name", "Features", "Gate", "Summary"):
+            self.assertEqual(scene.view_of(keys.at(title)).answers, shown, title)
+        text = screen_text(keys.at("Summary"))
+        for label, value in (("PROJECT", "shop"), ("BASE", "trunk"), ("GATE", "make check")):
+            self.assertRegex(text, r"%s +%s" % (label, value))
+        self.assertFalse(self.file.exists())
+
+    def test_without_the_merge_lane_the_screens_show_no_gate(self):
+        keys = repos.Keys(ENTER, "n")
+        self.run_cli("init", "--preset", "minimal", keys=keys, folder=self.repo)
+
+        self.assertEqual(scene.view_of(keys.at("Summary")).answers, {"project": "shop", "base": "main", "features": "board, sweep"})
+        self.assertNotIn("GATE", screen_text(keys.at("Summary")))
+
+    def test_the_panel_about_a_feature_says_what_it_needs_what_needs_it_and_its_tools(self):
+        keys = repos.Keys(ENTER, DOWN, DOWN, "q")  # the cursor on merge-lane
+        self.run_cli("init", keys=keys, folder=self.repo)
+
+        text = screen_text(keys.at("Features"))
+        about = text[text.index("╭─ ◆ merge-lane") :]
+        self.assertIn(config.FEATURES["merge-lane"].summary[:40], about)
+        self.assertRegex(about, r"NEEDS +nothing else")
+        self.assertRegex(about, r"NEEDED BY +merge-guard")
+        self.assertRegex(about, r"TOOLS +git, gh")
+        self.assertFalse(self.file.exists())
 
     def test_without_the_merge_lane_no_gate_is_asked(self):
         keys = repos.Keys(ENTER, ENTER, "y")

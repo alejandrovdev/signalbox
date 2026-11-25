@@ -11,6 +11,11 @@
 plain questions) and change nothing until the last one is confirmed. A flag answers its
 screen beforehand; `--yes` takes what each other screen would start from, and confirms. A
 screen still to answer when the input ends is a usage error that names its flag (`Usage`).
+
+When Homebrew is there and git, gh or Claude Code is missing (or git is too old), `setup`
+warns, asks whether to install them (`--install-missing` answers yes, `--yes` alone no), and
+runs the installs, in front of the person, after the last confirmation and before saving. A
+gh that is not signed in is the person's to sign in: setup says how, and never does it.
 """
 
 import json
@@ -24,6 +29,10 @@ from .repository import FALLBACK_BASE, REMOTE
 
 NOTHING = "Nothing was changed."
 NEXT_INIT = "Next: in a repository's folder, run: " + names.command("init")
+GH_SIGN_IN = "Sign in to GitHub by running `gh auth login`."
+CLAUDE_SIGN_IN = "Sign in to Claude Code by running `claude` once."
+NO_HOMEBREW = "Homebrew was not found, so nothing was installed (missing: %s): get Homebrew from https://brew.sh, or install them yourself."
+NOTHING_MISSING = "Nothing to install: every prerequisite Homebrew installs is there."
 
 
 class Usage(Exception):
@@ -42,15 +51,15 @@ def given_features(chosen):
     return features
 
 
-def asked(asker, steps, start, flags, yes):
+def asked(asker, steps, start, flags, yes, recap=None):
     """Ask the screens no flag answered, starting from `start`: the answers, or None when the
-    person quit or said no."""
+    person quit or said no. `recap` says what the screens show of the answers so far."""
     given = {key for key, value in flags.items() if value is not None}
     known = dict(start, **{key: flags[key] for key in given})
     if yes:
         given |= {key for key, value in known.items() if value is not None} | {answers.PREREQUISITES, answers.CONFIRM}
         known[answers.CONFIRM] = True
-    sequence = ui.Sequence.start(steps, known, given)
+    sequence = ui.Sequence.start(steps, known, given, recap)
     try:
         sequence = asker.ask(sequence)
     except ui.Missing as missing:
@@ -80,19 +89,54 @@ def hook_command(host, shared=False):
     return invocation.shell(words, environment)
 
 
+def installed(brew, installs, host, out):
+    """Install each prerequisite with Homebrew, its output in view; a failure is said and the
+    rest go on. Whether every one was installed."""
+    every = True
+    for name, check in installs:
+        title = doctor.TITLES[name]
+        out("Installing %s: %s" % (title, doctor.brew_command(check)))
+        code = host.run_in_view([brew] + list(check.install))
+        if code:
+            out("Could not install %s: brew exited %d." % (title, code))
+            every = False
+        elif name == "gh":
+            out(GH_SIGN_IN)
+        elif name == "claude":
+            out(CLAUDE_SIGN_IN)
+    return every
+
+
 def setup(chosen, context):
-    configuration, out = context.configuration(), context.out
-    settings = names.claude_settings(context.host.environ)
+    configuration, out, host = context.configuration(), context.out, context.host
+    settings = names.claude_settings(host.environ)
     install = not chosen.no_hooks
+    named = doctor.named_prerequisites(host, settings, "this setup installs them" if install else None)
+    brew = doctor.homebrew(host)
+    installs = doctor.installable(named) if brew else []
+    labels = [doctor.TITLES[name] for name, _ in installs]
     steps = [
-        screens.prerequisites(doctor.prerequisites(context.host, settings, "this setup installs them" if install else None)),
+        screens.prerequisites([check for _, check in named], installs, brew is not None),
+        screens.install(installs),
         screens.features("Default features"),
-        screens.confirm("Save these defaults?", lambda given: answers.setup_summary(configuration, given, settings, install)),
+        screens.confirm("Save these defaults?", lambda given: answers.setup_summary(configuration, given, settings, install, labels)),
     ]
-    got = asked(context.asker, steps, answers.setup_answers(configuration), {answers.FEATURES: given_features(chosen)}, chosen.yes)
+    start = answers.setup_answers(configuration)
+    flags = {answers.INSTALL: "yes" if chosen.install_missing else None, answers.FEATURES: given_features(chosen)}
+    got = asked(context.asker, steps, start, flags, chosen.yes, lambda given: answers.setup_recap(given, install, labels))
     if got is None:
         out(NOTHING)
         return 1
+    every = installed(brew, installs, host, out) if got.get(answers.INSTALL) == "yes" else True
+    if chosen.install_missing and not installs:  # the flag asked for what cannot be done, or for nothing
+        missing = doctor.installable(named)
+        if missing:
+            out(NO_HOMEBREW % ", ".join(doctor.TITLES[name] for name, _ in missing))
+            every = False
+        else:
+            out(NOTHING_MISSING)
+    if got.get(answers.INSTALL) == "yes" and doctor.needs_sign_in(named):
+        out(GH_SIGN_IN)
     if not saved(answers.with_setup(configuration, got), context.config_file, out):
         return 1
     out("Saved the configuration in %s." % context.config_file)
@@ -104,7 +148,7 @@ def setup(chosen, context):
             return 1
         out(("Installed the Claude Code hooks in %s." if changed else "The Claude Code hooks were installed already in %s.") % settings)
     out(NEXT_INIT)
-    return 0
+    return 0 if every else 1
 
 
 GATE_SCRIPTS = ("verify", "check")
@@ -174,7 +218,7 @@ def init(chosen, context):
         screens.confirm(question, lambda given: answers.init_summary(given, top, base, existing)),
     ]
     start = answers.init_answers(configuration, existing, answers.suggested_name(top, configuration), proposed_gate(top))
-    got = asked(context.asker, steps, start, flags, chosen.yes)
+    got = asked(context.asker, steps, start, flags, chosen.yes, lambda given: answers.init_recap(given, base))
     if got is None:
         out(NOTHING)
         return 1

@@ -48,6 +48,8 @@ class StandInHost(Host):
         self.walks = 0  # how many times a hook looked for it
         self.spawned = []
         self.now = None
+        self.installs = []  # what was run in front of the person, such as `brew install gh`
+        self.install_codes = {}  # its words joined: the exit code it gives (0 when not named)
 
     def start_dates(self, pid):
         return None if self.started is None else self.started.get(pid, [])
@@ -64,6 +66,11 @@ class StandInHost(Host):
 
     def clock(self):
         return self.now if self.now is not None else super().clock()
+
+    def run_in_view(self, words):
+        """Never run: recorded, and answered with the exit code the test named."""
+        self.installs.append(list(words))
+        return self.install_codes.get(" ".join(words), 0)
 
 
 class Scratch(unittest.TestCase):
@@ -86,6 +93,7 @@ class Scratch(unittest.TestCase):
             "SIGNALBOX_CONFIG": str(self.tmp / "state" / "config.toml"),
             "SIGNALBOX_CLAUDE_SETTINGS": str(self.home / ".claude" / "settings.json"),
             "SIGNALBOX_SESSIONS_DIR": str(self.tmp / "sessions"),
+            "SIGNALBOX_BREW": str(self.tmp / "no-brew"),  # never this Mac's Homebrew
         }
         self.host = StandInHost(self.environ)
         self.printed = []
@@ -222,6 +230,7 @@ class Keys:
         self.keys = list(keys)
         self.terminal = terminal
         self.shown = []  # every widget, before each key
+        self.sequences = []  # the sequence it was in, before each key
         self.asked = 0  # how many sequences it was asked
 
     def ask(self, sequence):
@@ -234,6 +243,7 @@ class Keys:
         self.asked += 1
         while sequence.state == RUNNING:
             self.shown.append(sequence.widget)
+            self.sequences.append(sequence)
             if not self.keys and not self.terminal:
                 raise Missing(sequence.flag, sequence.widget.title)
             if not self.keys:
@@ -252,3 +262,7 @@ class Keys:
     def last(self, title):
         """The widget of a screen as it was last shown."""
         return [widget for widget in self.shown if widget.title == title][-1]
+
+    def at(self, title):
+        """The sequence as it was when a screen was last shown."""
+        return [sequence for sequence in self.sequences if sequence.widget.title == title][-1]

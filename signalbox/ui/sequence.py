@@ -1,6 +1,6 @@
 """A sequence of screens: the widgets a command asks, one after another.
 
-    Sequence.start(screens, answers, given)   the first screen to ask
+    Sequence.start(screens, answers, given, recap)   the first screen to ask
     press(key)     a key: Enter goes on, Esc or left goes back, q or Ctrl-C quits
     answer(text)   a typed line: "<" goes back, "q" quits (except as text)
 
@@ -9,12 +9,13 @@ Each screen gives one answer, under its key. A screen whose answer was given bef
 does not apply; going back skips both. A screen is made again each time it is reached, from
 the answers so far, which hold its own earlier answer: what was chosen before is chosen
 again. A confirmation answered no ends the sequence as quitting does: nothing is answered
-for whoever asked. The sequence itself changes nothing.
+for whoever asked. The sequence itself changes nothing. A recap, when given, says how the
+answers so far are shown: a function of the answers to (label, value) pairs.
 """
 
 import dataclasses
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Optional
 
 from .widgets import CTRL_C, ESC, LEFT, Confirm
 
@@ -38,10 +39,11 @@ class Sequence:
     widget: object = None
     state: str = RUNNING
     shown: tuple = ()  # the screens asked before this one, in order: where back goes
+    recap: Optional[Callable] = None  # the answers so far: (label, value) pairs to show
 
     @classmethod
-    def start(cls, screens, answers=None, given=()):
-        return cls(tuple(screens), dict(answers or {}), frozenset(given)).forward(0)
+    def start(cls, screens, answers=None, given=(), recap=None):
+        return cls(tuple(screens), dict(answers or {}), frozenset(given), recap=recap).forward(0)
 
     def asked(self, index, answers):
         """The widget of a screen, or None when it is not asked with these answers."""

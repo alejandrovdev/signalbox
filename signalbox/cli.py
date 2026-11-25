@@ -1,6 +1,7 @@
 """The command line: `signalbox <command>`.
 
-    setup                      once: check the prerequisites, choose the defaults, install the hooks
+    setup                      once: check the prerequisites (and, with Homebrew, offer to
+                               install what is missing), choose the defaults, install the hooks
     init [folder]              link a repository's folder, choosing its features
     deinit [folder]            unlink it (--shared-hooks: also remove the repository's hooks)
     status                     the board: every worktree of this repository (--group: of
@@ -402,6 +403,11 @@ def parser():
     )
     chosen_features(setting_up)
     setting_up.add_argument("--no-hooks", action="store_true", help="do not install the hooks in ~/.claude/settings.json")
+    setting_up.add_argument(
+        "--install-missing",
+        action="store_true",
+        help="install what is missing (git, gh, Claude Code) with Homebrew once the summary is confirmed (--yes alone installs nothing)",
+    )
     linking_folder = command("init", lambda context: linking.init(context.chosen, context), "Link a repository's folder, choosing its features and gate.")
     linking_folder.add_argument("folder", nargs="?", help="a folder of the repository (default: this one)")
     linking_folder.add_argument("--name", metavar="<name>", help="the project's name")

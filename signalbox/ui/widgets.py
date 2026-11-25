@@ -108,6 +108,7 @@ class Checklist:
     needs: dict = field(default_factory=dict)  # an item's value: the values it needs
     checked: frozenset = frozenset()
     why: dict = field(default_factory=dict)  # an item's value: why it was turned on or off for the person
+    facts: dict = field(default_factory=dict)  # an item's value: (label, text) pairs about it, for the screens
     cursor: int = 0
     error: str = ""
     done: bool = False
@@ -118,8 +119,8 @@ class Checklist:
     prompt: ClassVar[str] = "Numbers to turn on or off, or Enter to accept: "
 
     @classmethod
-    def of(cls, title, items, needs, checked=()):
-        return cls(title, tuple(items), dict(needs), frozenset(checked))
+    def of(cls, title, items, needs, checked=(), facts=None):
+        return cls(title, tuple(items), dict(needs), frozenset(checked), facts=dict(facts or {}))
 
     def needed(self, value):
         """Everything an item needs, and what those need."""
