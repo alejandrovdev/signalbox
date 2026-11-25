@@ -10,6 +10,8 @@ a new major version.
 
 - A repository with no remote at all uses its own base branch: the board, the session brief,
   the sweep and the metrics work in it. The merge lane still needs `origin` on GitHub.
+- The MIT License, a contributing guide, a security policy and tests on GitHub Actions; the
+  repository and its Homebrew tap are public.
 
 ## [1.1.0] - 2026-11-25
 
