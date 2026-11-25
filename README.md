@@ -2,15 +2,16 @@
 
 Lanes for parallel Claude Code sessions that work in git worktrees of one repository.
 
-> **Status: in development.** The repository and its Homebrew tap are private until
-> publication: `brew install` works only for a GitHub account with access to both. Commands
-> and files may still change before the first public release.
+> **Status: 1.0.0, private.** The repository and its Homebrew tap are private until
+> publication: `brew install` works only for a GitHub account with access to both. See the
+> [changelog](CHANGELOG.md).
 
 Contents: [What it does](#what-it-does) · [Requirements](#requirements) ·
 [Install](#install) · [Quick start](#quick-start) ·
 [Setting up and linking](#setting-up-and-linking) ·
 [Features and presets](#features-and-presets) · [Configuration](#configuration) ·
-[Commands](#commands) · [The merge lane](#the-merge-lane) · [The sweep](#the-sweep) ·
+[Commands](#commands) · [The merge lane](#the-merge-lane) ·
+[Repositories that depend on each other](#repositories-that-depend-on-each-other) · [The sweep](#the-sweep) ·
 [The session brief and the hooks](#the-session-brief-and-the-hooks) ·
 [The merge guard](#the-merge-guard) · [Flow metrics](#flow-metrics) ·
 [Files it writes](#files-it-writes) · [Troubleshooting](#troubleshooting) ·
@@ -35,6 +36,8 @@ and lets one through at a time. signalbox does the same for the sessions of a re
 - **Merge guard**: sessions that try a direct `gh pr merge` are told to use the lane.
 - **Sweep**: clean worktrees whose branch was merged, and merged local branches, go away.
 - **Flow metrics**: lead time, lane waits and failures, merges outside the lane.
+- **Groups**: repositories that depend on each other share the brief and the board, and
+  their pull requests merge in dependency order.
 
 It installs once with Homebrew, is set up once from a terminal interface, and links any
 number of repositories, each with only the features it needs. It is for one person (or a
@@ -353,6 +356,21 @@ crosses folders. A pattern with no slash matches a name anywhere (`node_modules`
 `*.tsbuildinfo`); one with a slash matches the path from the worktree's top
 (`docs/features/*.md`).
 
+### `[groups.<name>]`
+
+Repositories that depend on each other (an API and the apps that call it, say) form a group:
+
+```toml
+[groups.platform]
+projects = ["api", "web", "mobile"]
+```
+
+`projects` names linked projects in dependency order: a project merges after those before it.
+A group's name follows the project-name rule; a group names at least two projects, and a
+project is in one group at most. `init` renames a project inside its group too; `deinit`
+takes it out of its group and removes a group left with fewer than two, and says so. See
+[Repositories that depend on each other](#repositories-that-depend-on-each-other).
+
 ### After you edit the file
 
 Every command, and every hook, reads the file each time it runs: there is nothing to reload
@@ -386,11 +404,11 @@ signalbox: ~/notes is in no linked project. Link its repository with: signalbox 
 | `setup` | `--preset <name>` or `--feature <feature>` (repeated), `--no-hooks`, `--yes` | Set up once: check the prerequisites, choose the defaults, install the Claude Code hooks. |
 | `init [folder]` | `--name <name>`, `--gate <command>`, `--base <branch>`, `--shared-hooks`, `--preset <name>` or `--feature <feature>` (repeated), `--yes` | Link a repository's folder, or replace the settings of one linked already. |
 | `deinit [folder]` | | Unlink a repository's folder. |
-| `status` | `--json`, `--no-github` | Show the board. `--no-github` leaves out the open pull requests (no `gh`). |
+| `status` | `--json`, `--no-github`, `--group` | Show the board. `--no-github` leaves out the open pull requests (no `gh`); `--group` shows the board of every project of this project's group, in order. |
 | `brief` | | Print what the session-start hook tells a session. |
 | `changes` | | Print what changed in the other worktrees since the last run in this worktree. |
 | `sweep` | `--dry-run`, `--json`, `--background` | Remove merged, clean worktrees and merged local branches. `--dry-run` says what it would do and changes nothing; `--background` starts it detached, prints nothing and exits 0, passing the other flags on. |
-| `merge <pr>` | `--dry-run`, `--allow-gate-change` | Merge a pull request through the lane. `--dry-run` merges and runs the gate in the merge worktree, then stops; `--allow-gate-change` runs a pull request that changes the gate's own files. |
+| `merge <pr> [<project>#<pr> ...]` | `--dry-run`, `--allow-gate-change` | Merge a pull request through the lane; with `<project>#<pr>`, several pull requests of one group, in the group's order. `--dry-run` merges and runs the gate in the merge worktree, then stops; `--allow-gate-change` runs a pull request that changes the gate's own files. |
 | `metrics` | `--since <YYYY-MM-DD>`, `--until <YYYY-MM-DD>`, `--json`, `--no-github` | Print flow metrics. `--since`: the first local day (default: 14 days ago); `--until`: the local day the window ends at, excluded (default: now). |
 | `doctor` | | Check what signalbox and each project need on this Mac. |
 | `hook <event>` | `--shared` | What Claude Code's hooks run: `session-start`, `user-prompt-submit` or `pre-tool-use`, with the hook's JSON on standard input. |
@@ -532,6 +550,7 @@ runs and the metrics read them all.
 | `mergeCommit` | the commit GitHub wrote to the base |
 | `failedStep` | the step `gate_failed_step` found, or `null` |
 | `gateLog` | the file with a failed gate's whole output, or `null` |
+| `group` | the group of a [group merge](#repositories-that-depend-on-each-other), or `null` |
 
 | Status | Meaning | Exit code |
 | --- | --- | --- |
@@ -546,6 +565,48 @@ runs and the metrics read them all.
 | `tree_mismatch` | merged, but the base's tree is not the checked one: look at the base now | 1 |
 | `interrupted` | stopped by Ctrl-C or `SIGTERM` | 130 or 143 |
 | `error` | git or the fetch failed, the head left its branch, or the merge worktree's folder holds something else | 1 |
+
+## Repositories that depend on each other
+
+One change often spans several repositories: a field the API adds and the app shows. Link
+each repository as its own project (each with its base and gate), then name them in a
+[`[groups.<name>]`](#groupsname) table, in dependency order. The group adds three things.
+
+**The brief reaches across the group.** After this repository's lines, a session also reads
+`Other repositories of <group>:` and one line per worktree of the other repositories that
+changes files (`- api: add-coupons; features: coupons`), each measured against its own
+project's base, git only. A repository of the group that cannot be read is left out. Within
+the brief's 2,000 characters this repository's lines come first: the group's are cut first.
+
+**One board for the group.** `signalbox status --group` prints the board of every project of
+the group, in order (`--json`: `{"group": ..., "projects": [{"project": ..., ...}]}`; a
+project that cannot be read is named, and the exit code is 1).
+
+**A merge in order.** Name the pull requests of the change, a bare number for this folder's
+repository and `<project>#<number>` for the others:
+
+```sh
+signalbox merge 25 api#27
+```
+
+```text
+group: merging in order: api#27, web#25; what merges stays merged if a later one fails.
+...
+group: api#27 merged
+group: web#25 merged
+```
+
+Every pull request is read first: when any would be refused (closed, a draft, on another
+base, from a fork, unreadable), each is named and nothing runs. Then the lanes run one after
+another in the group's order (not the command line's), each in its own repository with its
+own lock, gate and lane log (its record says `"group"`), and the run stops at the first that
+does not merge: the closing lines say `merged`, `not merged (<status>)` or `not tried`. The
+exit code is 0 only when all merged. `--dry-run` and `--allow-gate-change` apply to each.
+
+What it cannot do: merge atomically across repositories. What merged stays merged when a
+later pull request fails its gate; fix that one and run its merge again. A dry run checks
+each repository against its own base, which does not hold the earlier repositories' change.
+Put options before or after the pull requests, not between them.
 
 ## The sweep
 
