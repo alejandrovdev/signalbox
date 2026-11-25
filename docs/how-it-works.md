@@ -4,6 +4,8 @@ Part of [signalbox](../README.md). What the merge lane does step by step, how th
 
 ## The merge lane
 
+![The merge lane: a pull request is merged with the base, the gate checks the result, and it merges only if its head is still the same](images/merge-lane.png)
+
 `signalbox merge <pr>` merges one pull request into the base, one run at a time per
 repository, only after the project's gate passed on the result of merging it with the
 current base: the tree GitHub then writes to the base. Your working tree, index and branch

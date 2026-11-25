@@ -1,5 +1,7 @@
 # signalbox
 
+![signalbox: a railway signal showing green beside the name, and the line One train per track for your Claude Code sessions](docs/images/banner.png)
+
 One train per track for your Claude Code sessions: signalbox lets several sessions work on
 one repository at once, each in its own git worktree, without stepping on each other, and
 merges their pull requests one at a time, each checked on the merged result.
@@ -443,6 +445,8 @@ what the commands print without `--json` (read it, do not parse it); and the loo
 setup screens.
 
 ## How it works
+
+![The merge lane: a pull request is merged with the base, the gate checks the result, and it merges only if its head is still the same](docs/images/merge-lane.png)
 
 signalbox keeps no service running: each command, and each Claude Code hook, reads the
 configuration file and git, does its work and ends. The board and the brief never fetch;
