@@ -9,7 +9,8 @@ Nothing here belongs to one Mac or to one repository.
     in a repository's git common directory: <tool>-lane.lock, <tool>-lane.json;
     in each worktree's git directory: <tool>-changes.json
     variables      <TOOL>_CONFIG, <TOOL>_LOG_DIR, <TOOL>_CACHE_DIR, <TOOL>_SESSIONS_DIR,
-                   <TOOL>_CLAUDE_SETTINGS, <TOOL>_CLAUDE_PROJECTS, and <TOOL>_GIT, <TOOL>_GH for a tool
+                   <TOOL>_CLAUDE_SETTINGS, <TOOL>_CLAUDE_PROJECTS, and <TOOL>_GIT, <TOOL>_GH, <TOOL>_CLAUDE,
+                   <TOOL>_BREW for a tool
 """
 
 import os

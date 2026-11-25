@@ -2,7 +2,7 @@
 
 A feature receives a `Host` and asks it for everything outside the repository's files: git,
 gh, the start date of a process, the current directories of processes, the Claude Code
-session a hook runs for, the clock. Tools are
+session a hook runs for, the clock, an install run in front of the person. Tools are
 looked for when first needed, so a project without the merge lane needs no `gh`. A test
 passes a host whose `ps` and `lsof` are stand-ins and whose PATH holds stub programs.
 """
@@ -10,6 +10,7 @@ passes a host whose `ps` and `lsof` are stand-ins and whose PATH holds stub prog
 import os
 import re
 import subprocess
+import sys
 import time
 from functools import cached_property
 from types import SimpleNamespace
@@ -50,6 +51,16 @@ class Host:
             )
         except (OSError, subprocess.SubprocessError) as error:
             return failed(words, error)
+
+    def run_in_view(self, words):
+        """Run a program in front of the person, such as an install: it reads this terminal's
+        input and prints on it. Its exit code; 127 when it cannot start."""
+        for stream in (sys.stdout, sys.stderr):
+            stream.flush()  # what was printed before comes before what it prints
+        try:
+            return subprocess.run(list(words), env=self.environ).returncode
+        except (OSError, subprocess.SubprocessError):
+            return 127
 
     @cached_property
     def git(self):

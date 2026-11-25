@@ -1,14 +1,17 @@
 """What signalbox needs on this Mac and in each project, checked.
 
-    prerequisites(host, settings)   git (2.38 or later), gh signed in, Claude Code, the hooks
-    checks(project, host)           the folder, the repository, the base on origin, and what
-                                    the project's features need
+    named_prerequisites(host, settings)   git (2.38 or later), gh signed in, Claude Code, the hooks
+    installable(named)                    the missing ones Homebrew installs (git, gh, Claude Code)
+    homebrew(host)                        where `brew` is, or None
+    checks(project, host)                 the folder, the repository, the base on origin, and
+                                          what the project's features need
     report(configuration, host, settings, out)   print it all; 0 when nothing failed
 
 Nothing is changed. The only programs run are `git --version`, `gh auth status` and git
-reading each repository.
+reading each repository: `setup` runs the installs this module names.
 """
 
+import os
 import re
 from dataclasses import dataclass
 
@@ -19,12 +22,17 @@ from .atoms import worktrees
 OK, MISSING, PROBLEM, UNKNOWN = "ok", "missing", "problem", "unknown"
 GIT_NEEDED = (2, 38)  # merge-tree --write-tree
 
+# What Homebrew installs each prerequisite with (the words after `brew`), and what it is called.
+BREW = {"git": ("install", "git"), "gh": ("install", "gh"), "claude": ("install", "--cask", "claude-code")}
+TITLES = {"git": "git", "gh": "gh", "claude": "Claude Code"}
+
 
 @dataclass(frozen=True)
 class Check:
     state: str
     what: str
     advice: str = ""
+    install: tuple = ()  # when Homebrew fixes it: the words after `brew` that do
 
     @property
     def failed(self):
@@ -34,10 +42,16 @@ class Check:
         return "%-7s  %s" % (self.state, self.what + (": " + self.advice if self.advice else ""))
 
 
+def program(host, name):
+    """Where a tool is, when a program is there; None otherwise."""
+    found = host.find(name)
+    return found if found and os.access(found, os.X_OK) else None
+
+
 def git_check(host):
-    found = host.find("git")
+    found = program(host, "git")
     if found is None:
-        return Check(MISSING, "git", "install it with: brew install git")
+        return Check(MISSING, "git", "install it with: brew install git", BREW["git"])
     done = host.run([found, "--version"])
     version = re.search(r"(\d+)\.(\d+)", done.stdout or "")
     if version is None:
@@ -45,23 +59,23 @@ def git_check(host):
     numbers = (int(version.group(1)), int(version.group(2)))
     shown = "git %d.%d" % numbers
     if numbers < GIT_NEEDED:
-        return Check(PROBLEM, shown, "2.38 or later is needed: brew install git")
+        return Check(PROBLEM, shown, "2.38 or later is needed: brew install git", BREW["git"])
     return Check(OK, shown)
 
 
 def gh_check(host):
     gh = host.gh()
     if gh is None:
-        return Check(MISSING, "gh", "install it with: brew install gh")
+        return Check(MISSING, "gh", "install it with: brew install gh", BREW["gh"])
     if host.run([gh, "auth", "status"]).returncode != 0:
         return Check(PROBLEM, "gh", "not signed in: sign in with: gh auth login")
     return Check(OK, "gh, signed in")
 
 
 def claude_check(host):
-    found = host.find("claude")
+    found = program(host, "claude")
     if found is None:
-        return Check(MISSING, "Claude Code (claude)", "the session brief and the merge guard need it")
+        return Check(MISSING, "Claude Code (claude)", "the session brief and the merge guard need it", BREW["claude"])
     return Check(OK, "Claude Code at %s" % found)
 
 
@@ -77,8 +91,24 @@ def named_prerequisites(host, settings, hooks_advice=None):
     return [("git", git_check(host)), ("gh", gh_check(host)), ("claude", claude_check(host)), ("hooks", hooks_check(settings, hooks_advice))]
 
 
-def prerequisites(host, settings, hooks_advice=None):
-    return [check for _, check in named_prerequisites(host, settings, hooks_advice)]
+def installable(named):
+    """(name, check) of what is missing or too old that Homebrew installs, in their order."""
+    return [(name, check) for name, check in named if check.failed and check.install]
+
+
+def needs_sign_in(named):
+    """Whether gh is there but not signed in: no install fixes that."""
+    return any(name == "gh" and check.state == PROBLEM for name, check in named)
+
+
+def brew_command(check):
+    """The command that installs what a check found missing, as the person would type it."""
+    return " ".join(("brew",) + check.install)
+
+
+def homebrew(host):
+    """Where Homebrew's `brew` is, found the way the other tools are; None when it is not."""
+    return program(host, "brew")
 
 
 def needed(configuration):
