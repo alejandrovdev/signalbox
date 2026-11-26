@@ -1,6 +1,6 @@
 # How signalbox works
 
-Part of [signalbox](../README.md). What the merge lane does step by step, how the sweep decides, what the hooks tell a session, and how to read the flow metrics.
+Part of [signalbox](../README.md). What the merge lane does step by step, how the sweep decides, what the hooks tell a session, what the merge guard refuses, how to read the flow metrics, and what a group of repositories that depend on each other adds.
 
 ## The merge lane
 
@@ -124,7 +124,7 @@ runs and the metrics read them all.
 | `mergeCommit` | the commit GitHub wrote to the base |
 | `failedStep` | the step `gate_failed_step` found, or `null` |
 | `gateLog` | the file with a failed gate's whole output, or `null` |
-| `group` | the group of a [group merge](../README.md#repositories-that-depend-on-each-other), or `null` |
+| `group` | the group of a [group merge](#repositories-that-depend-on-each-other), or `null` |
 
 | Status | Meaning | Exit code |
 | --- | --- | --- |
@@ -209,7 +209,7 @@ A worktree whose branch is not merged is not reported. With nothing to do, it pr
 | --- | --- | --- | --- |
 | `session-start` | `SessionStart` | 15 s | With `session-brief`, prints the brief, which reaches the session. With `sweep`, starts a sweep in the background. |
 | `user-prompt-submit` | `UserPromptSubmit` | 15 s | With `session-brief`, prints what changed in the other worktrees since the previous prompt. |
-| `pre-tool-use` | `PreToolUse`, for `Bash` | 10 s | With `merge-guard`, refuses a direct merge (see [the merge guard](../README.md#the-merge-guard)). |
+| `pre-tool-use` | `PreToolUse`, for `Bash` | 10 s | With `merge-guard`, refuses a direct merge (see [the merge guard](#the-merge-guard)). |
 
 Every other setting and hook of the file is kept as it was; `uninstall` takes out only
 these three.
@@ -253,6 +253,33 @@ failing hook.
 The two sets never run twice: a `--shared` hook does nothing when the person's own
 user-level hooks are installed, so a person who ran `setup` is served by their own hooks
 only.
+
+## The merge guard
+
+With `merge-guard`, the `pre-tool-use` hook reads each command a session is about to run in
+Bash and refuses a merge that skips the lane. The session is told:
+
+```text
+Merge through the lane: signalbox merge 42. A direct gh pr merge skips the check of the merged result.
+```
+
+What it refuses:
+
+- `gh pr merge`, also with `gh`'s own `-R` or `--repo` before `pr`;
+- a call to GitHub's API with `PUT` on `pulls/<number>/merge`, through `gh api`, `curl` or
+  `wget`;
+- either one after `&&`, `;`, `|`, a newline, `env` or variable assignments, `timeout`, or
+  inside `bash -c '...'`.
+
+What passes: the same words inside a quoted argument (a commit message, a search pattern, an
+`echo`), `gh pr merge --help`, and a `GET` of `pulls/<number>/merge`, which only asks.
+
+**It is guidance, not a security boundary.** It reads commands as the shell splits them and
+cannot run them, so `xargs`, `eval`, a GraphQL mutation, a `gh` alias or an interpreter
+(`python3 -c`, `node -e`) get around it. It sees only the commands of Claude Code sessions
+in a linked repository: a merge from GitHub's website or from your own terminal is not seen.
+The metrics count such merges as `Outside the merge lane`. A hook that refuses (exit 2)
+stops the call in every permission mode.
 
 ## Flow metrics
 
@@ -302,3 +329,45 @@ sections (`--json` gives the same as one object; a measure with nothing to measu
 Percentiles use the nearest rank. `--until` excludes the day it names. The days follow your
 Mac's time zone, or the `TZ` variable.
 
+## Repositories that depend on each other
+
+One change often spans several repositories: a field the API adds and the app shows. Link
+each repository as its own project (each with its base and gate), then name them in a
+[`[groups.<name>]`](configuration.md#groupsname) table, in dependency order. The group adds three things.
+
+**The brief reaches across the group.** After this repository's lines, a session also reads
+`Other repositories of <group>:` and one line per worktree of the other repositories that
+changes files (`- api: add-coupons; features: coupons`), each measured against its own
+project's base, git only. A repository of the group that cannot be read is left out. Within
+the brief's 2,000 characters this repository's lines come first: the group's are cut first.
+
+**One board for the group.** `signalbox status --group` prints the board of every project of
+the group, in order (`--json`: `{"group": ..., "projects": [{"project": ..., ...}]}`; a
+project that cannot be read is named, and the exit code is 1).
+
+**A merge in order.** Name the pull requests of the change, a bare number for this folder's
+repository and `<project>#<number>` for the others:
+
+```sh
+signalbox merge 25 api#27
+```
+
+```text
+group: merging in order: api#27, web#25; what merges stays merged if a later one fails.
+...
+group: api#27 merged
+group: web#25 merged
+```
+
+Every pull request is read first: when any would be refused (closed, a draft, on another
+base, from a fork, unreadable, or changing its own gate without `--allow-gate-change`), each
+is named and nothing runs. Then the lanes run one after
+another in the group's order (not the command line's), each in its own repository with its
+own lock, gate and lane log (its record says `"group"`), and the run stops at the first that
+does not merge: the closing lines say `merged`, `not merged (<status>)` or `not tried`. The
+exit code is 0 only when all merged. `--dry-run` and `--allow-gate-change` apply to each.
+
+What it cannot do: merge atomically across repositories. What merged stays merged when a
+later pull request fails its gate; fix that one and run its merge again. A dry run checks
+each repository against its own base, which does not hold the earlier repositories' change.
+Put options before or after the pull requests, not between them.

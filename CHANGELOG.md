@@ -4,6 +4,17 @@ Each release of signalbox, newest first. Versions follow `MAJOR.MINOR.PATCH`: fr
 a change that breaks a command, a flag, the configuration file or the lane log's fields takes
 a new major version.
 
+## [Unreleased]
+
+### Changed
+
+- The README is short: what signalbox solves, how to install it, a quick start and its
+  features. The reference moves to `docs/`: every command, flag and exit code, uninstalling
+  and the compatibility promise in `docs/commands.md`; the configuration file, the
+  environment variables and the files signalbox writes in `docs/configuration.md`; the merge
+  guard and groups of repositories in `docs/how-it-works.md`. How the code is laid out and
+  how to try a change apart from your install move to `CONTRIBUTING.md`.
+
 ## [1.2.0] - 2026-11-25
 
 ### Added

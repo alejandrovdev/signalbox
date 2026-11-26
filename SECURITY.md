@@ -22,6 +22,6 @@ Only the latest release gets security fixes. Upgrade with `brew upgrade signalbo
 
 The merge guard is guidance, not a security boundary: it reads the commands a session is
 about to run and sends a direct merge of a pull request to the lane, and a determined
-command gets around it (see [The merge guard](README.md#the-merge-guard)). The gate is the
+command gets around it (see [The merge guard](docs/how-it-works.md#the-merge-guard)). The gate is the
 repository's own command, run as you; review a pull request that changes it before you
 allow it.
