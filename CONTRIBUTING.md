@@ -1,7 +1,7 @@
 # Contributing to signalbox
 
 Thank you for helping. signalbox is small on purpose: the Python standard library only, a
-macOS tool installed with Homebrew, and behavior a person can predict from the README.
+macOS tool installed with Homebrew, and behavior a person can predict from its documentation.
 
 ## Before you write code
 
@@ -24,12 +24,47 @@ Python 3.11 or later, nothing to install. The tests build temporary repositories
 git, put a stub `gh` and a stub gate first on `PATH`, and stand in for `ps` and `lsof`: they
 need no network, no GitHub account and no terminal of yours.
 
-To try a change without touching an install you use, follow
-[A rehearsal apart from a real install](README.md#a-rehearsal-apart-from-a-real-install).
+### Try a change apart from your install
 
-The package is built in layers (see [Development](README.md#development)): an atom knows
-nothing of features, and a feature declares what it needs and does nothing when it is off.
-Keep a new piece in the lowest layer that can hold it.
+The `SIGNALBOX_*` [environment variables](docs/configuration.md#environment-variables)
+move the files signalbox keeps outside your repositories, so a rehearsal never touches your
+own configuration, logs, caches or Claude Code settings:
+
+```sh
+scratch=$(mktemp -d)
+export SIGNALBOX_CONFIG="$scratch/config.toml" SIGNALBOX_LOG_DIR="$scratch/logs" \
+  SIGNALBOX_CACHE_DIR="$scratch/cache" SIGNALBOX_CLAUDE_SETTINGS="$scratch/settings.json" \
+  SIGNALBOX_CLAUDE_PROJECTS="$scratch/projects" SIGNALBOX_SESSIONS_DIR="$scratch/sessions"
+python3 -m signalbox doctor
+```
+
+The rehearsal is still real where it acts: `merge` merges on GitHub, and `sweep` removes
+worktrees and branches of the repository you run it in.
+
+### How the code is laid out
+
+The package is built in layers. An atom knows nothing of features; a feature declares what
+it needs and does nothing when it is off; presets name sets of features; a project picks a
+preset or its own list. Keep a new piece in the lowest layer that can hold it.
+
+```mermaid
+flowchart BT
+    atoms["<b>Atoms</b><br/>one job each: git and worktrees, the lane's lock,<br/>programs, JSON-lines logs, path patterns, state files"]
+    features["<b>Features</b><br/>what a project turns on or off"]
+    presets["<b>Presets</b><br/>named sets of features"]
+    projects["<b>Projects</b><br/>a repository with its preset or its own list"]
+
+    atoms --> features --> presets --> projects
+```
+
+| Where | What |
+| --- | --- |
+| `signalbox/atoms/` | the atoms: git, worktrees, the lane's lock, JSON-lines logs, path patterns, state files, finding programs |
+| `signalbox/features/` | `board`, `brief` (`session-brief`), `lane` (`merge-lane`), `guard` (`merge-guard`), `sweep`, `metrics` |
+| `signalbox/config.py` | the feature table, the presets and the configuration file |
+| `signalbox/linking.py`, `answers.py`, `screens.py`, `ui/` | `setup`, `init`, `deinit`, `uninstall` and the terminal interface |
+| `signalbox/hooks.py` | installing and removing the Claude Code hooks |
+| `signalbox/cli.py`, `doctor.py`, `names.py`, `host.py`, `linked.py`, `repository.py` | the command line, the checks, every name the tool creates, the machine as the features see it, and which project a folder belongs to |
 
 ## How a change is made
 
